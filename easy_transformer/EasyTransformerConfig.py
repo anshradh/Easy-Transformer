@@ -1,10 +1,9 @@
-# %%
 from dataclasses import dataclass
 from typing import Union, Tuple, List, Dict, Any, Optional
 import torch
 import torch.nn as nn
 
-# %%
+
 @dataclass
 class EasyTransformerConfig:
     """
@@ -77,6 +76,3 @@ class EasyTransformerConfig:
         Instantiates a `EasyTransformerConfig` from a Python dictionary of parameters.
         """
         return cls(**config_dict)
-
-
-# %%
