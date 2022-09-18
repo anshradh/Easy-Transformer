@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 from tqdm.auto import tqdm
 from einops import rearrange
+from .triton.TritonAdam import TritonAdam
 
 
 @dataclass
@@ -89,8 +90,8 @@ def train(
             )
         else:
             optimizer = optim.Adam(
-            model.parameters(),
-            lr=config.lr,
+                model.parameters(),
+                lr=config.lr,
             )
     elif config.optimizer_name == "SGD":
         optimizer = optim.SGD(
@@ -100,6 +101,10 @@ def train(
             if config.weight_decay is not None
             else 0.0,
             momentum=config.momentum,
+        )
+    elif config.optimizer_name == "TritonAdam":
+        optimizer = TritonAdam(
+            model.parameters(), lr=config.lr, weight_decay=config.weight_decay
         )
     else:
         raise ValueError(f"Optimizer {config.optimizer_name} not supported")
@@ -118,8 +123,8 @@ def train(
     for epoch in tqdm(range(1, config.num_epochs + 1)):
         samples = 0
         for step, batch in tqdm(enumerate(dataloader)):
-            tokens = batch['tokens'].to(config.device)
-            loss = model(tokens, return_type='loss')
+            tokens = batch["tokens"].to(config.device)
+            loss = model(tokens, return_type="loss")
             loss.backward()
             if config.max_grad_norm is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
@@ -132,12 +137,11 @@ def train(
             samples += tokens.shape[0]
 
             if config.wandb:
-                wandb.log({"train_loss": loss.item(), "samples": samples, 'epoch': epoch})
-            
-            if (
-                config.print_every is not None
-                and step % config.print_every == 0
-            ):
+                wandb.log(
+                    {"train_loss": loss.item(), "samples": samples, "epoch": epoch}
+                )
+
+            if config.print_every is not None and step % config.print_every == 0:
                 print(f"Epoch {epoch} Samples {samples} Step {step} Loss {loss.item()}")
 
             if (
@@ -146,11 +150,8 @@ def train(
                 and config.save_dir is not None
             ):
                 torch.save(model.state_dict(), f"{config.save_dir}/model_{step}.pt")
-            
-            if (
-                config.max_steps is not None
-                and step >= config.max_steps
-            ):
+
+            if config.max_steps is not None and step >= config.max_steps:
                 break
 
     return model

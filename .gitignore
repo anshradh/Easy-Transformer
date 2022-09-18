@@ -1,1 +1,4 @@
 __pycache__
+**/build/**
+**easy_transformer.egg-info/**
+
