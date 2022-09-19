@@ -715,6 +715,7 @@ class EasyTransformer(HookedRootModule):
         self,
         input: Union[str, list, torch.Tensor],
         max_new_tokens: int,
+        device: Optional[torch.device] = None,
         stop_at_eos: bool = True,
         pad_token_id: Optional[int] = None,
         eos_token_id: Optional[int] = None,
@@ -756,8 +757,11 @@ class EasyTransformer(HookedRootModule):
             tokens = input
         assert isinstance(tokens, torch.Tensor)
         B, S = tokens.shape
+        if device is None:
+            device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        tokens = tokens.to(device)
         if use_cache:
-            cache = EasyTransformerKeyValueCache.init_cache(self.cfg, self.device, B)
+            cache = EasyTransformerKeyValueCache.init_cache(self.cfg, device, B)
         else:
             cache = None
         if stop_at_eos and pad_token_id is None:

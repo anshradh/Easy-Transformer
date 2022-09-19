@@ -68,13 +68,14 @@ training_cfg = EasyTransformerTrainConfig(
     num_epochs = 1,
     batch_size = 16,
     weight_decay = 0.01,
-    lr=1e-4,
-    max_grad_norm=0.5,
+    lr=1e-2,
+    max_grad_norm=1.0,
     optimizer_name = 'TritonAdam',
     print_every=320,
-    max_steps=32000,
     device="cuda",
 )
 assert isinstance(dataset, datasets.arrow_dataset.Dataset)
 micro_gpt = train(micro_gpt, training_cfg, dataset)
 # %%
+micro_gpt.tokenizer.batch_decode(micro_gpt.generate("The red-tailed hawk", max_new_tokens=50, do_sample=True, temperature=2))
+#%%
