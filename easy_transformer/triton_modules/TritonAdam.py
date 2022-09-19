@@ -137,10 +137,12 @@ class TritonAdam(Optimizer):
                 self.lr,
                 self.beta1,
                 self.beta2,
-                self.beta1**self.t,
-                self.beta2**self.t,
+                self.beta1 ** self.t,
+                self.beta2 ** self.t,
                 self.eps,
                 self.wd,
                 self.total_n_elements,
-                BLOCK_SIZE=8192,
+                BLOCK_SIZE=min(
+                    triton.next_power_of_two(self.total_n_elements), 2 ** 10
+                ),
             )
