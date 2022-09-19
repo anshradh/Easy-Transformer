@@ -17,7 +17,7 @@ setup(
         "pandas",
         "datasets",
         "wandb",
-        "triton",
+        "triton==2.0.0.dev20220305",
         "plotly",
         "fancy_einsum",
     ],

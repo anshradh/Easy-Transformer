@@ -757,7 +757,7 @@ class EasyTransformer(HookedRootModule):
         assert isinstance(tokens, torch.Tensor)
         B, S = tokens.shape
         if use_cache:
-            cache = EasyTransformerKeyValueCache.init_cache(self.cfg, B)
+            cache = EasyTransformerKeyValueCache.init_cache(self.cfg, self.device, B)
         else:
             cache = None
         if stop_at_eos and pad_token_id is None:

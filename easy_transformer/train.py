@@ -1,15 +1,16 @@
 from easy_transformer.EasyTransformer import EasyTransformer
 from easy_transformer.EasyTransformerConfig import EasyTransformerConfig
 from dataclasses import dataclass
-from typing import Optional, Callable
-from torch.utils.data import Dataset, DataLoader
+from typing import Optional, Callable, Union
+from torch.utils.data import Dataset as torch_Dataset, DataLoader
+import datasets
 import torch.optim as optim
 import wandb
 import torch
 import torch.nn as nn
 from tqdm.auto import tqdm
 from einops import rearrange
-from .triton.TritonAdam import TritonAdam
+from triton_modules.TritonAdam import TritonAdam
 
 
 @dataclass
@@ -58,7 +59,7 @@ class EasyTransformerTrainConfig:
 def train(
     model: EasyTransformer,
     config: EasyTransformerTrainConfig,
-    dataset: Dataset,
+    dataset: Union[torch_Dataset, datasets.arrow_dataset.Dataset],
 ) -> EasyTransformer:
     """
     Trains an EasyTransformer model on an autoregressive language modeling task.
@@ -141,8 +142,8 @@ def train(
                     {"train_loss": loss.item(), "samples": samples, "epoch": epoch}
                 )
 
-            if config.print_every is not None and step % config.print_every == 0:
-                print(f"Epoch {epoch} Samples {samples} Step {step} Loss {loss.item()}")
+            if config.print_every is not None and (step + 1) % config.print_every == 0:
+                print(f"Epoch {epoch} Samples {samples} Step {step + 1} Loss {loss.item()}")
 
             if (
                 config.save_every is not None
