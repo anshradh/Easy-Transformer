@@ -1,7 +1,7 @@
 from easy_transformer_speedy.EasyTransformer import EasyTransformer
 from easy_transformer_speedy.EasyTransformerConfig import EasyTransformerConfig
 from dataclasses import dataclass
-from typing import Optional, Callable, Union
+from typing import Optional, Callable, Union, Any
 from torch.utils.data import Dataset as torch_Dataset, DataLoader
 import datasets
 import torch.optim as optim
@@ -11,6 +11,29 @@ import torch.nn as nn
 from tqdm.auto import tqdm
 from einops import rearrange
 from triton_modules.TritonAdam import TritonAdam
+
+
+class LambdaLRScheduler:
+    """
+    A custom learning rate scheduler that uses a lambda function to compute a multiplier on the learning rate.
+    """
+
+    def __init__(self, optimizer: Any, lr_lambda: Callable):
+        self.optimizer = optimizer
+        self.lr_lambda = lr_lambda
+        self.steps_taken = 0
+
+    def step(self):
+        self.steps_taken += 1
+        if hasattr(self.optimizer, "param_groups"):
+            for param_group in self.optimizer.param_groups:
+                param_group["lr"] = self.lr_lambda(self.steps_taken) * param_group["lr"]
+        elif hasattr(self.optimizer, "lr"):
+            self.optimizer.lr = self.lr_lambda(self.steps_taken) * self.optimizer.lr
+        else:
+            raise ValueError(
+                "Optimizer does not have a parameter group or a learning rate."
+            )
 
 
 @dataclass
@@ -112,12 +135,12 @@ def train(
 
     scheduler = None
     if config.warmup_steps > 0:
-        scheduler = optim.lr_scheduler.LambdaLR(
+        scheduler = LambdaLRScheduler(
             optimizer,
             lr_lambda=lambda step: min(1.0, step / config.warmup_steps),
         )
 
-    dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)  # type: ignore
 
     model.to(config.device)
 
