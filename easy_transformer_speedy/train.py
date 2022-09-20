@@ -1,5 +1,5 @@
-from easy_transformer.EasyTransformer import EasyTransformer
-from easy_transformer.EasyTransformerConfig import EasyTransformerConfig
+from easy_transformer_speedy.EasyTransformer import EasyTransformer
+from easy_transformer_speedy.EasyTransformerConfig import EasyTransformerConfig
 from dataclasses import dataclass
 from typing import Optional, Callable, Union
 from torch.utils.data import Dataset as torch_Dataset, DataLoader
@@ -143,7 +143,9 @@ def train(
                 )
 
             if config.print_every is not None and (step + 1) % config.print_every == 0:
-                print(f"Epoch {epoch} Samples {samples} Step {step + 1} Loss {loss.item()}")
+                print(
+                    f"Epoch {epoch} Samples {samples} Step {step + 1} Loss {loss.item()}"
+                )
 
             if (
                 config.save_every is not None

@@ -8,16 +8,16 @@ import numpy as np
 import einops
 from tqdm import tqdm
 
-from easy_transformer.hook_points import HookedRootModule, HookPoint
-from easy_transformer.utils import (
+from easy_transformer_speedy.hook_points import HookedRootModule, HookPoint
+from easy_transformer_speedy.utils import (
     gelu_new,
     to_numpy,
     get_corner,
     print_gpu_mem,
     get_sample_from_dataset,
 )
-from easy_transformer.EasyTransformer import EasyTransformer
-from easy_transformer.experiments import (
+from easy_transformer_speedy.EasyTransformer import EasyTransformer
+from easy_transformer_speedy.experiments import (
     ExperimentMetric,
     AblationConfig,
     EasyAblation,
@@ -27,7 +27,7 @@ from easy_transformer.experiments import (
 def test_semantic_ablation():
     """
     Compute semantic ablation
-    in a manual way, and then 
+    in a manual way, and then
     in the experiments.py way and check that they agree
     """
 

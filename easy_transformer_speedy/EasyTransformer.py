@@ -40,8 +40,8 @@ from transformers import (
     PreTrainedTokenizer,
 )
 
-from easy_transformer.hook_points import HookedRootModule, HookPoint
-from easy_transformer.utils import (
+from easy_transformer_speedy.hook_points import HookedRootModule, HookPoint
+from easy_transformer_speedy.utils import (
     gelu_new,
     to_numpy,
     get_corner,
@@ -52,9 +52,9 @@ from easy_transformer.utils import (
     geglu,
     swiglu,
 )
-from easy_transformer.EasyTransformerConfig import EasyTransformerConfig
+from easy_transformer_speedy.EasyTransformerConfig import EasyTransformerConfig
 
-from easy_transformer.EasyTransformerKeyValueCache import (
+from easy_transformer_speedy.EasyTransformerKeyValueCache import (
     EasyTransformerKeyValueCache,
     EasyTransformerKeyValueCacheEntry,
 )
