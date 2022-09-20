@@ -31,6 +31,24 @@ def adam_update_kernel(
     n_elements,
     BLOCK_SIZE: tl.constexpr,
 ):
+    """
+    This kernel implements the Adam(W) update rule in-place on the given parameters.
+
+    Args:
+        params_ptr (torch.Tensor): Pointer to the parameters.
+        params_grad_ptr (torch.Tensor): Pointer to the parameters gradients.
+        m_ptr (torch.Tensor): Pointer to the first moment.
+        v_ptr (torch.Tensor): Pointer to the second moment.
+        lr (float): Learning rate.
+        beta1 (float): Exponential decay rate for the first moment estimates.
+        beta2 (float): Exponential decay rate for the second moment estimates.
+        beta1_t (float): beta1^t.
+        beta2_t (float): beta2^t.
+        eps (float): Term added to the denominator to improve numerical stability.
+        wd (float): Weight decay. If > 0, weight decay is applied and AdamW is implemented.
+        n_elements (int): Number of elements in the parameters.
+        BLOCK_SIZE (int): Triton block size.
+    """
     pid = tl.program_id(0)
     block_start = pid * BLOCK_SIZE
     offsets = block_start + tl.arange(0, BLOCK_SIZE)
@@ -65,7 +83,11 @@ class TritonAdam(Optimizer):
     """
     Implements Adam (or AdamW) using Triton (https://github.com/openai/triton).
 
+    We unroll all parameters into a single buffer, and use a single kernel to update all parameters.
+    Credit to Connor Kissane for this idea (https://ckkissane.github.io/fused_adam_post.html)
+
     Like the PyTorch versions, but assumes amsgrad=False and maximize=False
+
     If weight_decay != 0.0, identical to:
         https://pytorch.org/docs/stable/generated/torch.optim.Adam.html
     Else:
