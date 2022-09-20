@@ -101,9 +101,7 @@ training_cfg = EasyTransformerTrainConfig(
 assert isinstance(dataset, datasets.arrow_dataset.Dataset)
 micro_gpt = train(micro_gpt, training_cfg, dataset)
 # %%
-micro_gpt.tokenizer.batch_decode(
-    micro_gpt.generate(
-        "The red-tailed hawk", max_new_tokens=50, do_sample=True, temperature=2
-    )
+micro_gpt.generate(
+    "The red-tailed hawk", max_new_tokens=50, do_sample=True, temperature=2
 )
 #%%
