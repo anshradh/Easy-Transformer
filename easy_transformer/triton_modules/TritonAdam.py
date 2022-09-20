@@ -119,9 +119,7 @@ class TritonAdam(Optimizer):
         buffer_index = 0
         for p in self.params:
             n = p.numel()
-            self.param_buffer[
-                buffer_index : buffer_index + n
-            ] = p.data.clone().flatten()
+            self.param_buffer[buffer_index : buffer_index + n] = p.data.view(-1)
             p.data = self.param_buffer[buffer_index : buffer_index + n].view(
                 p.data.shape
             )
