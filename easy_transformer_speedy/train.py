@@ -16,6 +16,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 import time
 import os
+import time
 
 
 class LambdaLRScheduler:
@@ -176,9 +177,10 @@ def train(
     dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)  # type: ignore
 
     model.to(config.device)
-
+    train_time = 0.0
     for epoch in tqdm(range(1, config.num_epochs + 1)):
         samples = 0
+        start_time = time.perf_counter()
         for step, batch in tqdm(enumerate(dataloader)):
             tokens = batch["tokens"].to(config.device)
             loss = model(tokens, return_type="loss")
@@ -202,18 +204,30 @@ def train(
 
             samples += tokens.shape[0]
 
-            if config.wandb:
-                wandb.log(
-                    {"train_loss": loss.item(), "samples": samples, "epoch": epoch}
-                )
+            train_time += time.perf_counter() - start_time
 
-            if config.print_every is not None and (step + 1) % config.print_every == 0:
-                print(
-                    f"Epoch {epoch} Samples {samples} Step {step + 1} Loss {loss.item()}"
+            if is_leader and config.wandb:
+                wandb.log(
+                    {
+                        "train_loss": loss.item(),
+                        "samples": samples,
+                        "epoch": epoch,
+                        "elapsed": train_time,
+                    }
                 )
 
             if (
-                config.save_every is not None
+                is_leader
+                and config.print_every is not None
+                and (step + 1) % config.print_every == 0
+            ):
+                print(
+                    f"Epoch {epoch} Samples {samples} Step {step + 1} Loss {loss.item()}, Train Time: {train_time}"
+                )
+
+            if (
+                is_leader
+                and config.save_every is not None
                 and step % config.save_every == 0
                 and config.save_dir is not None
             ):
