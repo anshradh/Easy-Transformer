@@ -1,8 +1,9 @@
+import collections
 from easy_transformer_speedy.EasyTransformer import EasyTransformer
 from easy_transformer_speedy.EasyTransformerConfig import EasyTransformerConfig
 from dataclasses import dataclass
 from typing import Optional, Callable, Union, Any
-from torch.utils.data import Dataset as torch_Dataset, DataLoader
+from torch.utils.data import Dataset as torch_Dataset, DataLoader, Subset
 import datasets
 import torch.optim as optim
 import wandb
@@ -11,6 +12,10 @@ import torch.nn as nn
 from tqdm.auto import tqdm
 from einops import rearrange
 from triton_modules.TritonAdam import TritonAdam
+import torch.distributed as dist
+import torch.multiprocessing as mp
+import time
+import os
 
 
 class LambdaLRScheduler:
@@ -52,6 +57,7 @@ class EasyTransformerTrainConfig:
             training
         optimizer_name (str): The name of the optimizer to use
         device (str, *optional*): Device to use for training
+        num_devices(int, *optional*): Number of devices to use for training
         warmup_steps (int, *optional*): Number of warmup steps to use for training
         save_every (int, *optional*): After how many batches should a checkpoint be saved
         save_dir, (str, *optional*): Where to save checkpoints
@@ -70,6 +76,7 @@ class EasyTransformerTrainConfig:
     weight_decay: Optional[float] = None
     optimizer_name: str = "Adam"
     device: Optional[str] = None
+    num_devices: Optional[int] = None
     warmup_steps: int = 0
     save_every: Optional[int] = None
     save_dir: Optional[str] = None
@@ -83,6 +90,7 @@ def train(
     model: EasyTransformer,
     config: EasyTransformerTrainConfig,
     dataset: Union[torch_Dataset, datasets.arrow_dataset.Dataset],
+    is_leader: bool = True,
 ) -> EasyTransformer:
     """
     Trains an EasyTransformer model on an autoregressive language modeling task.
@@ -91,18 +99,26 @@ def train(
         config: The training configuration
         dataset: The dataset to train on - this function assumes the dataset is
             set up for autoregressive language modeling.
+        is_leader: Whether this process is the leader process.
+
     Returns:
         The trained model
     """
-    torch.manual_seed(config.seed)
-    model.train()
-    if config.wandb:
+    batch_size = config.batch_size
+    rank = 0
+    world_size = 1
+    is_dist = dist.is_initialized()
+    if is_dist:
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        assert world_size > 1
+        assert config.batch_size % world_size == 0
+        batch_size = batch_size // world_size
+
+    if config.wandb and is_leader:
         if config.wandb_project_name is None:
             config.wandb_project_name = "easy-transformer"
         wandb.init(project=config.wandb_project_name, config=vars(config))
-
-    if config.device is None:
-        config.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     if config.optimizer_name in ["Adam", "AdamW"]:
         # Weight decay in Adam is implemented badly, so use AdamW instead (see PyTorch AdamW docs)
@@ -140,6 +156,23 @@ def train(
             lr_lambda=lambda step: min(1.0, step / config.warmup_steps),
         )
 
+    model.train()
+    torch.manual_seed(config.seed + rank)
+
+    if is_dist:
+        handles = []
+        for p in model.parameters():
+            handles.append(dist.broadcast(p, 0, async_op=True))
+        for h in handles:
+            h.wait()
+
+    if is_dist:
+        samples_per_device = len(dataset) // world_size  # type: ignore
+        if rank != world_size - 1:
+            dataset = Subset(dataset, range(rank * samples_per_device, (rank + 1) * samples_per_device))  # type: ignore
+        else:
+            dataset = Subset(dataset, range(rank * samples_per_device, len(dataset)))  # type: ignore
+
     dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)  # type: ignore
 
     model.to(config.device)
@@ -152,6 +185,15 @@ def train(
             loss.backward()
             if config.max_grad_norm is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+
+            if is_dist:
+                for p in model.parameters():
+                    by_dtype = collections.defaultdict(list)
+                    if p.grad is not None and p.requires_grad:
+                        by_dtype[p.grad.dtype].append(p.grad)
+                    for v in by_dtype.values():
+                        dist.all_reduce_coalesced(v)
+
             optimizer.step()
             if config.warmup_steps > 0:
                 assert scheduler is not None
@@ -181,3 +223,42 @@ def train(
                 break
 
     return model
+
+
+def rank_process(
+    rank: int,
+    world_size: int,
+    model: EasyTransformer,
+    config: EasyTransformerTrainConfig,
+    dataset,
+):
+    """
+    Calls train on a single process. This is used for distributed training.
+    """
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
+    store = dist.TCPStore("127.0.0.1", 1234, world_size, rank == 0)
+    dist.init_process_group("nccl", rank=rank, world_size=world_size, store=store)
+    train(model, config, dataset, is_leader=rank == 0)
+
+
+def run_train(model: EasyTransformer, config: EasyTransformerTrainConfig, dataset):
+    """
+    Runs (possibly distributed) training on a model.
+    """
+    if config.device is None:
+        config.device = "cuda" if torch.cuda.is_available() else "cpu"
+    if config.num_devices is None:
+        if torch.cuda.is_available() and config.device == "cuda":
+            config.num_devices = torch.cuda.device_count()
+        else:
+            config.num_devices = 1
+
+    if config.num_devices > 1:
+        mp.spawn(
+            rank_process,
+            args=(config.num_devices, model, config, dataset),
+            nprocs=config.num_devices,
+            join=True,
+        )
+    else:
+        train(model, config, dataset)
