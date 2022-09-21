@@ -64,44 +64,48 @@ from easy_transformer_speedy.experiments import (
     PatchingConfig,
 )
 from easy_transformer_speedy.EasyTransformerConfig import EasyTransformerConfig
-from easy_transformer_speedy.train import train, EasyTransformerTrainConfig
+from easy_transformer_speedy.train import run_train, EasyTransformerTrainConfig
 
 # %%
 device = "cuda" if torch.cuda.is_available() else "cpu"
 # %%
-micro_gpt_cfg = EasyTransformerConfig(
-    d_model=384,
+small_gpt_cfg = EasyTransformerConfig(
+    d_model=768,
     d_head=64,
-    n_heads=6,
-    d_mlp=1536,
-    n_layers=6,
-    n_ctx=512,
+    n_heads=12,
+    d_mlp=4 * 768,
+    n_layers=12,
+    n_ctx=1024,
     act_fn="gelu_new",
     normalization_type="LN",
     tokenizer_name="gpt2",
 )
-micro_gpt = EasyTransformer.from_config(micro_gpt_cfg)
+small_gpt = EasyTransformer.from_config(small_gpt_cfg)
 # %%
 dataset = datasets.load_dataset("stas/openwebtext-10k", split="train")
 assert isinstance(dataset, datasets.arrow_dataset.Dataset)
 dataset = tokenize_and_concatenate(
-    dataset, micro_gpt.tokenizer, max_length=micro_gpt.cfg.n_ctx, add_bos_token=False
+    dataset, small_gpt.tokenizer, max_length=small_gpt.cfg.n_ctx, add_bos_token=False
 )
 # %%
 training_cfg = EasyTransformerTrainConfig(
     num_epochs=1,
     batch_size=16,
     weight_decay=0.01,
-    lr=1e-2,
+    lr=1e-3,
     max_grad_norm=1.0,
     optimizer_name="TritonAdam",
-    print_every=320,
+    print_every=128,
     device="cuda",
+    wandb=True,
+    wandb_project_name="TritonAdamTesting",
+    max_steps=640,
+    # warmup_steps=128,
 )
 assert isinstance(dataset, datasets.arrow_dataset.Dataset)
-micro_gpt = train(micro_gpt, training_cfg, dataset)
+run_train(small_gpt, training_cfg, dataset)
 # %%
-micro_gpt.generate(
-    "The red-tailed hawk", max_new_tokens=50, do_sample=True, temperature=2
+small_gpt.generate(
+    "The red-tailed hawk", max_new_tokens=50, do_sample=True, temperature=0.7
 )
 #%%

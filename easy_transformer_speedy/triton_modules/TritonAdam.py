@@ -157,12 +157,15 @@ class TritonAdam(Optimizer):
                 self.lr,
                 self.beta1,
                 self.beta2,
-                self.beta1 ** self.t,
-                self.beta2 ** self.t,
+                self.beta1**self.t,
+                self.beta2**self.t,
                 self.eps,
                 self.wd,
                 self.total_n_elements,
-                BLOCK_SIZE=min(
-                    triton.next_power_of_two(self.total_n_elements), 2 ** 10
-                ),
+                num_warps=4
+                if (triton.next_power_of_2(self.total_n_elements) < 2048)
+                else 8
+                if (triton.next_power_of_2(self.total_n_elements) < 4096)
+                else 16,
+                BLOCK_SIZE=min(triton.next_power_of_2(self.total_n_elements), 2**12),
             )

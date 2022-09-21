@@ -1,6 +1,7 @@
 import collections
 from easy_transformer_speedy.EasyTransformer import EasyTransformer
 from easy_transformer_speedy.EasyTransformerConfig import EasyTransformerConfig
+from easy_transformer_speedy.utils import tokenize_and_concatenate
 from dataclasses import dataclass
 from typing import Optional, Callable, Union, Any
 from torch.utils.data import Dataset as torch_Dataset, DataLoader, Subset
@@ -11,6 +12,7 @@ import torch
 import torch.nn as nn
 from tqdm.auto import tqdm
 from einops import rearrange
+
 from triton_modules.TritonAdam import TritonAdam
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -92,7 +94,7 @@ def train(
     config: EasyTransformerTrainConfig,
     dataset: Union[torch_Dataset, datasets.arrow_dataset.Dataset],
     is_leader: bool = True,
-) -> EasyTransformer:
+):
     """
     Trains an EasyTransformer model on an autoregressive language modeling task.
     Args:
@@ -101,9 +103,6 @@ def train(
         dataset: The dataset to train on - this function assumes the dataset is
             set up for autoregressive language modeling.
         is_leader: Whether this process is the leader process.
-
-    Returns:
-        The trained model
     """
     batch_size = config.batch_size
     rank = 0
@@ -120,6 +119,9 @@ def train(
         if config.wandb_project_name is None:
             config.wandb_project_name = "easy-transformer"
         wandb.init(project=config.wandb_project_name, config=vars(config))
+
+    model.train()
+    model.to(config.device)
 
     if config.optimizer_name in ["Adam", "AdamW"]:
         # Weight decay in Adam is implemented badly, so use AdamW instead (see PyTorch AdamW docs)
@@ -157,7 +159,6 @@ def train(
             lr_lambda=lambda step: min(1.0, step / config.warmup_steps),
         )
 
-    model.train()
     torch.manual_seed(config.seed + rank)
 
     if is_dist:
@@ -176,11 +177,12 @@ def train(
 
     dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)  # type: ignore
 
-    model.to(config.device)
-    train_time = 0.0
+    start_time = time.perf_counter()
+    if scheduler is not None:
+        scheduler.step()
     for epoch in tqdm(range(1, config.num_epochs + 1)):
+        print(f"Starting training on rank {rank} with config {config}")
         samples = 0
-        start_time = time.perf_counter()
         for step, batch in tqdm(enumerate(dataloader)):
             tokens = batch["tokens"].to(config.device)
             loss = model(tokens, return_type="loss")
@@ -197,14 +199,13 @@ def train(
                         dist.all_reduce_coalesced(v)
 
             optimizer.step()
-            if config.warmup_steps > 0:
-                assert scheduler is not None
+            if scheduler is not None:
                 scheduler.step()
             optimizer.zero_grad()
 
             samples += tokens.shape[0]
 
-            train_time += time.perf_counter() - start_time
+            train_time = time.perf_counter() - start_time
 
             if is_leader and config.wandb:
                 wandb.log(
@@ -235,8 +236,8 @@ def train(
 
             if config.max_steps is not None and step >= config.max_steps:
                 break
-
-    return model
+    if config.wandb:
+        wandb.finish()
 
 
 def rank_process(

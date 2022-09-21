@@ -1,4 +1,6 @@
 __pycache__
 **/build/**
 **easy_transformer_speedy.egg-info/**
-
+**easy_transformer_speedy/wandb/**
+**/wandb/**
+**wandb
