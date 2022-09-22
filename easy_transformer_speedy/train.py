@@ -211,7 +211,7 @@ def train(
                 wandb.log(
                     {
                         "train_loss": loss.item(),
-                        "samples": samples,
+                        "samples": samples * world_size,
                         "epoch": epoch,
                         "elapsed": train_time,
                     }
@@ -223,7 +223,7 @@ def train(
                 and (step + 1) % config.print_every == 0
             ):
                 print(
-                    f"Epoch {epoch} Samples {samples} Step {step + 1} Loss {loss.item()}, Train Time: {train_time}"
+                    f"Epoch {epoch} Samples {samples*world_size} Step {step + 1} Loss {loss.item()}, Train Time: {train_time}"
                 )
 
             if (
