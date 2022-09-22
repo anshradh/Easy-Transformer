@@ -15,9 +15,9 @@ class EasyTransformerConfig:
         d_mlp (int): The dimensionality of the feedforward mlp network.
         n_layers (int): The number of attention layers.
         n_ctx (int): The maximum sequence length.
-        d_vocab (int): The size of the vocabulary. If not set, will be automatically set 
+        d_vocab (int): The size of the vocabulary. If not set, will be automatically set
             from the tokenizer's vocab size.
-        act_fn (str): The activation function to use. Always lowercase. Supports ['relu', 'gelu', 'silu', 'glu'm 'gelu_new', 'solu_ln', 'reglu', 'geglu', 'swiglu'].
+        act_fn (str): The activation function to use. Always lowercase. Supports ['relu', 'gelu', 'silu', 'glu', 'gelu_new', 'solu_ln', 'reglu', 'geglu', 'swiglu'].
         eps (float): The epsilon value to use for layer normalization. Defaults to 1e-5
         use_attn_result (bool): whether to explicitly calculate the amount
             each head adds to the residual stream (with a hook) and THEN add it
@@ -32,22 +32,23 @@ class EasyTransformerConfig:
             weights from HuggingFace or initialized to "custom" if not passed
         full_model_name (str, *optional*): the full name of the model,
             initialized to "custom" if not passed
-        tokenizer_name (str, *optional*): the full name of the model, passed into 
-            HuggingFace to access the tokenizer. Only used when passing in custom 
+        tokenizer_name (str, *optional*): the full name of the model, passed into
+            HuggingFace to access the tokenizer. Only used when passing in custom
             config, if loading from pretrained then this is not needed.
         window_size (int, *optional*): the size of the window for local
             attention
         attn_types (List[str], *optional*): the types of attention to use for
             local attention
-        weight_init_mode (str): the initialization mode to use for the 
-            weights. Only relevant for custom models, ignored for pre-trained. Options 
-            are 'pytorch' (for PyTorch defaults) and 'gpt2' (for GPT-2 defaults), 
+        weight_init_mode (str): the initialization mode to use for the
+            weights. Only relevant for custom models, ignored for pre-trained. Options
+            are 'pytorch' (for PyTorch defaults) and 'gpt2' (for GPT-2 defaults),
             defaults to 'gpt2
-        normalization_type (str, *optional*): the type of normalization to use. Options 
-            are None (no normalization), 'LN' (use LayerNorm, including weights & 
-            biases) and 'LNPre' (use LayerNorm, but no weights & biases). Defaults to 
+        normalization_type (str, *optional*): the type of normalization to use. Options
+            are None (no normalization), 'LN' (use LayerNorm, including weights &
+            biases) and 'LNPre' (use LayerNorm, but no weights & biases). Defaults to
             None
         gated_act_fn (bool): Whether a gated activation function is being used (geglu, reglu, swiglu). Automatically set from act_fn. Used to determine whether to create an extra MLP weight matrix W_gate
+        use_triton (bool): Whether to use custom triton kernels. Defaults to False. If true, overwrites normalization_type to "triton"
     """
 
     d_model: int
@@ -69,9 +70,10 @@ class EasyTransformerConfig:
     tokenizer_name: Optional[str] = None
     window_size: Optional[int] = None
     attn_types: Optional[List] = None
-    init_mode: str = 'gpt2'
+    init_mode: str = "gpt2"
     normalization_type: Optional[str] = None
     gated_act_fn: bool = False
+    use_triton: bool = False
 
     def __post_init__(self):
         assert self.d_model % self.n_heads == 0, "d_model must be divisible by n_heads"
@@ -86,8 +88,10 @@ class EasyTransformerConfig:
             self.model_name = "custom"
             self.model_type = "custom"
             self.full_model_name = "custom"
-        if self.act_fn in ['reglu', 'geglu', 'swiglu']:
+        if self.act_fn in ["reglu", "geglu", "swiglu"]:
             self.gated_act_fn = True
+        if self.use_triton:
+            self.normalization_type = "triton"
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]):

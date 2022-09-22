@@ -1,18 +1,10 @@
-import torch as t
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from torch.optim.optimizer import Optimizer
-from typing import List, Optional, Tuple, Iterable
-import math
-import sklearn
-from sklearn.datasets import make_moons
-from torch.utils.data import TensorDataset, DataLoader
 import torch
-from functools import wraps
-import time
+from torch.optim.optimizer import Optimizer
+from typing import Optional, Tuple, Iterable
 import triton
 import triton.language as tl
+
+from triton_modules.utils import num_warps_from_block_size
 
 
 @triton.jit
@@ -96,7 +88,7 @@ class TritonAdam(Optimizer):
 
     def __init__(
         self,
-        params: Iterable[t.nn.parameter.Parameter],
+        params: Iterable[torch.nn.parameter.Parameter],
         lr: float = 0.001,
         betas: Tuple[float, float] = (0.9, 0.999),
         eps: float = 1e-08,
@@ -131,8 +123,8 @@ class TritonAdam(Optimizer):
 
         self.param_buffer.grad = self.grad_buffer
 
-        self.m = t.zeros_like(self.grad_buffer)
-        self.v = t.zeros_like(self.grad_buffer)
+        self.m = torch.zeros_like(self.grad_buffer)
+        self.v = torch.zeros_like(self.grad_buffer)
 
     def zero_grad(self):
         if self.param_buffer.grad is not None:
@@ -142,30 +134,25 @@ class TritonAdam(Optimizer):
                 self.param_buffer.grad.requires_grad_(False)
             self.param_buffer.grad.zero_()
 
+    @torch.inference_mode()
     def step(self):
         self.t += 1
 
-        with t.inference_mode():
-            grid = lambda meta: (
-                triton.cdiv(self.total_n_elements, meta["BLOCK_SIZE"]),
-            )
-            adam_update_kernel[grid](  # type: ignore
-                self.param_buffer,
-                self.grad_buffer,
-                self.m,
-                self.v,
-                self.lr,
-                self.beta1,
-                self.beta2,
-                self.beta1**self.t,
-                self.beta2**self.t,
-                self.eps,
-                self.wd,
-                self.total_n_elements,
-                num_warps=4
-                if (triton.next_power_of_2(self.total_n_elements) < 2048)
-                else 8
-                if (triton.next_power_of_2(self.total_n_elements) < 4096)
-                else 16,
-                BLOCK_SIZE=min(triton.next_power_of_2(self.total_n_elements), 2**12),
-            )
+        grid = lambda meta: (triton.cdiv(self.total_n_elements, meta["BLOCK_SIZE"]),)
+        block_size = min(triton.next_power_of_2(self.total_n_elements), 2**12)
+        adam_update_kernel[grid](  # type: ignore
+            self.param_buffer,
+            self.grad_buffer,
+            self.m,
+            self.v,
+            self.lr,
+            self.beta1,
+            self.beta2,
+            self.beta1**self.t,
+            self.beta2**self.t,
+            self.eps,
+            self.wd,
+            self.total_n_elements,
+            num_warps=num_warps_from_block_size(block_size),
+            BLOCK_SIZE=block_size,
+        )

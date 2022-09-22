@@ -1,3 +1,4 @@
+# %%
 from mimetypes import init
 from typing import Callable, Union, List, Tuple, Dict, Optional
 import torch
@@ -58,6 +59,8 @@ from easy_transformer_speedy.EasyTransformerKeyValueCache import (
     EasyTransformerKeyValueCache,
     EasyTransformerKeyValueCacheEntry,
 )
+
+from triton_modules.TritonLayerNorm import triton_layernorm
 
 VALID_MODEL_NAMES = set(
     [
@@ -235,6 +238,37 @@ class LayerNorm(nn.Module):
         return x * self.w + self.b
 
 
+class TritonLayerNorm(nn.Module):
+    """
+    LayerNorm module that uses a triton kernel to apply the operation. This drops some of the hook points
+    that you'd probably want for interpretability purposes currently, but is faster.
+    """
+
+    def __init__(
+        self, cfg: Union[Dict, EasyTransformerConfig], length: Optional[int] = None
+    ):
+        """
+        Args:
+            cfg (Union[Dict, EasyTransformerConfig]): Configuration for the model
+            length (Optional[int]): If the dimension of the LayerNorm. If not provided, assumed to be d_model
+        """
+        super().__init__()
+        if isinstance(cfg, Dict):
+            cfg = EasyTransformerConfig.from_dict(cfg)
+        self.cfg = cfg
+        self.eps = self.cfg.eps
+        if length is None:
+            self.length = self.cfg.d_model
+        else:
+            self.length = length
+
+        self.w = nn.Parameter(torch.ones(self.length))
+        self.b = nn.Parameter(torch.zeros(self.length))
+
+    def forward(self, x):
+        return triton_layernorm(x, self.w, self.b, self.eps)
+
+
 # Attention
 class Attention(nn.Module):
     def __init__(self, cfg: Union[Dict, EasyTransformerConfig], attn_type="global"):
@@ -387,7 +421,11 @@ class MLP(nn.Module):
         elif self.cfg.act_fn == "solu_ln":
             self.act_fn = solu
             self.hook_post_ln = HookPoint()  # [batch, pos, d_mlp]
-            self.ln = LayerNorm(self.cfg, self.cfg.d_mlp)
+            self.ln = (
+                TritonLayerNorm(self.cfg, self.cfg.d_mlp)
+                if self.cfg.use_triton
+                else LayerNorm(self.cfg, self.cfg.d_mlp)
+            )
         elif self.cfg.act_fn == "reglu":
             self.act_fn = reglu
         elif self.cfg.act_fn == "geglu":
@@ -430,6 +468,9 @@ class TransformerBlock(nn.Module):
             # We've folded in LayerNorm weights, so just need the center + scale parts
             self.ln1 = LayerNormPre(cfg)
             self.ln2 = LayerNormPre(cfg)
+        elif self.cfg.normalization_type == "triton":
+            self.ln1 = TritonLayerNorm(cfg)
+            self.ln2 = TritonLayerNorm(cfg)
         elif self.cfg.normalization_type is None:
             # If it's None, don't create either layer
             pass
@@ -606,6 +647,8 @@ class EasyTransformer(HookedRootModule):
         elif self.cfg.normalization_type == "LNPre":
             # We've folded in LayerNorm weights, so just need the center + scale parts
             self.ln_final = LayerNormPre(self.cfg)
+        elif self.cfg.normalization_type == "triton":
+            self.ln_final = TritonLayerNorm(self.cfg)
         elif self.cfg.normalization_type is None:
             # If it's None, don't create either layer
             pass
