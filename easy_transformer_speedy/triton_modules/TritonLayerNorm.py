@@ -7,6 +7,9 @@ import triton.language as tl
 
 from triton_modules.utils import num_warps_from_block_size
 
+
+# Credit to https://github.com/lucidrains/triton-transformer/blob/main/triton_transformer/layernorm.py
+
 GAMMA_BETA_BLOCK_SIZE = 64
 GAMMA_BETA_ROW_BLOCK_SIZE = 64
 
