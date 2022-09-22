@@ -817,6 +817,7 @@ class EasyTransformer(HookedRootModule):
                 if torch.cuda.is_available()
                 else torch.device("cpu")
             )
+        self.to(device)
         tokens = tokens.to(device)
         if use_cache:
             cache = EasyTransformerKeyValueCache.init_cache(self.cfg, device, B)
