@@ -295,7 +295,7 @@ class _layernorm(autograd.Function):
             n_cols,
             num_warps=4,
             BLOCK_SIZE=GAMMA_BETA_BLOCK_SIZE,
-            ROW_BLOCK_SIZE=GAMMA_BETA_ROW_BLOCK_SIZE,
+            BLOCK_SIZE_ROW=GAMMA_BETA_ROW_BLOCK_SIZE,
         )
 
         dbeta = dbeta.sum(dim=0)

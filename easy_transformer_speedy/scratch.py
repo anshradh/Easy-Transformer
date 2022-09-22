@@ -70,15 +70,16 @@ from easy_transformer_speedy.train import run_train, EasyTransformerTrainConfig
 device = "cuda" if torch.cuda.is_available() else "cpu"
 # %%
 small_gpt_cfg = EasyTransformerConfig(
-    d_model=768,
-    d_head=64,
-    n_heads=12,
-    d_mlp=4 * 768,
-    n_layers=12,
-    n_ctx=1024,
+    d_model=128,
+    d_head=16,
+    n_heads=8,
+    d_mlp=4 * 128,
+    n_layers=4,
+    n_ctx=512,
     act_fn="gelu_new",
     normalization_type="LN",
     tokenizer_name="gpt2",
+    use_triton=True,
 )
 small_gpt = EasyTransformer.from_config(small_gpt_cfg)
 # %%
