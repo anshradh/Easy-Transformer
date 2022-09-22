@@ -1,3 +1,4 @@
+# %%
 import collections
 from easy_transformer_speedy.EasyTransformer import EasyTransformer
 from easy_transformer_speedy.EasyTransformerConfig import EasyTransformerConfig
@@ -250,8 +251,9 @@ def rank_process(
     """
     Calls train on a single process. This is used for distributed training.
     """
+    print(f"Starting process on {rank}")
     os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
-    store = dist.TCPStore("127.0.0.1", 1234, world_size, rank == 0)
+    store = dist.TCPStore("127.0.0.1", 29500, world_size, rank == 0)
     dist.init_process_group("nccl", rank=rank, world_size=world_size, store=store)
     train(model, config, dataset, is_leader=rank == 0)
 
@@ -269,6 +271,7 @@ def run_train(model: EasyTransformer, config: EasyTransformerTrainConfig, datase
             config.num_devices = 1
 
     if config.num_devices > 1:
+        model.share_memory()
         mp.spawn(
             rank_process,
             args=(config.num_devices, model, config, dataset),
@@ -277,3 +280,58 @@ def run_train(model: EasyTransformer, config: EasyTransformerTrainConfig, datase
         )
     else:
         train(model, config, dataset)
+
+
+# %%
+if __name__ == "__main__":
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+# %%
+if __name__ == "__main__":
+    small_gpt_cfg = EasyTransformerConfig(
+        d_model=128,
+        d_head=16,
+        n_heads=8,
+        d_mlp=4 * 128,
+        n_layers=4,
+        n_ctx=512,
+        act_fn="gelu_new",
+        normalization_type="LN",
+        tokenizer_name="gpt2",
+    )
+    small_gpt = EasyTransformer.from_config(small_gpt_cfg)
+# %%
+if __name__ == "__main__":
+    dataset = datasets.load_dataset("stas/openwebtext-10k", split="train")
+    assert isinstance(dataset, datasets.arrow_dataset.Dataset)
+    dataset = tokenize_and_concatenate(
+        dataset,
+        small_gpt.tokenizer,
+        max_length=small_gpt.cfg.n_ctx,
+        add_bos_token=False,
+    )
+# %%
+if __name__ == "__main__":
+
+    training_cfg = EasyTransformerTrainConfig(
+        num_epochs=1,
+        batch_size=16,
+        weight_decay=0.01,
+        lr=1e-3,
+        max_grad_norm=1.0,
+        optimizer_name="AdamW",
+        print_every=128,
+        device="cuda",
+        wandb=True,
+        wandb_project_name="TritonAdamTesting",
+        max_steps=640,
+        num_devices=2,
+        # warmup_steps=128,
+    )
+    assert isinstance(dataset, datasets.arrow_dataset.Dataset)
+    run_train(small_gpt, training_cfg, dataset)
+# %%
+if __name__ == "__main__":
+    small_gpt.generate(
+        "The red-tailed hawk", max_new_tokens=50, do_sample=True, temperature=0.7
+    )
+#%%
