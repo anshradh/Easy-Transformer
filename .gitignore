@@ -4,3 +4,4 @@ __pycache__
 **easy_transformer_speedy/wandb/**
 **/wandb/**
 **wandb
+**easy_transformer_speedy/models/**

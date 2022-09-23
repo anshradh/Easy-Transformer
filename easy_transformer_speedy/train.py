@@ -178,10 +178,10 @@ def train(
     dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)  # type: ignore
 
     start_time = time.perf_counter()
+    print(f"Starting training on rank {rank} with config {config}")
     if scheduler is not None:
         scheduler.step()
     for epoch in tqdm(range(1, config.num_epochs + 1)):
-        print(f"Starting training on rank {rank} with config {config}")
         samples = 0
         for step, batch in tqdm(enumerate(dataloader)):
             tokens = batch["tokens"].to(config.device)
@@ -229,15 +229,21 @@ def train(
             if (
                 is_leader
                 and config.save_every is not None
-                and step % config.save_every == 0
+                and (step) % config.save_every == 0
                 and config.save_dir is not None
             ):
-                torch.save(model.state_dict(), f"{config.save_dir}/model_{step}.pt")
+                torch.save(
+                    model.state_dict(),
+                    f"{config.save_dir}/model_{epoch}_{step}.pt",
+                )
 
             if config.max_steps is not None and step >= config.max_steps:
                 break
     if config.wandb:
         wandb.finish()
+    if is_leader:
+        print(f"Finished training in {time.perf_counter() - start_time} seconds")
+        torch.save(model.state_dict(), f"{config.save_dir}/final_model.pt")
 
 
 def rank_process(
