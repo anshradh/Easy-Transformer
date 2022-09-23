@@ -246,7 +246,7 @@ def train(
         torch.save(model.state_dict(), f"{config.save_dir}/final_model.pt")
 
 
-def rank_process(
+def train_process(
     rank: int,
     world_size: int,
     model: EasyTransformer,
@@ -279,7 +279,7 @@ def run_train(model: EasyTransformer, config: EasyTransformerTrainConfig, datase
     if config.num_devices > 1:
         model.share_memory()
         mp.spawn(
-            rank_process,
+            train_process,
             args=(config.num_devices, model, config, dataset),
             nprocs=config.num_devices,
             join=True,
