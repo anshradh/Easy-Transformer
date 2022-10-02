@@ -25,6 +25,90 @@ from easy_transformer_speedy.EasyTransformerConfig import EasyTransformerConfig
 
 from easy_transformer_speedy.parallelism_utils import *
 
+# Tensor Parallel Linear Layers
+class LinearParallelSplitColumns(nn.Module):
+    """
+    Like nn.Linear, but distributes the weight and bias matrices across devices by
+    splitting along the column dimension.
+    """
+
+    def __init__(self, in_features, out_features, bias=True):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.world_size = get_tensor_parallel_world_size()
+        self.rank = get_tensor_parallel_rank()
+        self.weight = nn.Parameter(
+            torch.empty(
+                self.out_features // self.world_size,
+                self.in_features,
+                device=torch.device(torch.cuda.current_device()),
+            )
+        )
+        if bias:
+            self.bias = nn.Parameter(
+                torch.empty(
+                    self.out_features // self.world_size,
+                    device=torch.device(torch.cuda.current_device()),
+                )
+            )
+        else:
+            self.register_parameter("bias", None)
+
+    def forward(self, x):
+        parallel_x = Copy.apply(x)
+        parallel_out = F.linear(parallel_x, self.weight, self.bias)
+        if self.world_size > 1:
+            out = Gather.apply(parallel_out)
+        else:
+            out = parallel_out
+
+        return out
+
+
+class LinearParallelSplitRows(nn.Module):
+    """
+    Like nn.Linear, but distributes the weight matrix across devices by
+    splitting along the row dimension. The bias matrix is copied to all devices.
+    """
+
+    def __init__(self, in_features, out_features, bias=True):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.world_size = get_tensor_parallel_world_size()
+        self.rank = get_tensor_parallel_rank()
+        self.weight = nn.Parameter(
+            torch.empty(
+                self.out_features,
+                self.in_features // self.world_size,
+                device=torch.device(torch.cuda.current_device()),
+            )
+        )
+        if bias:
+            self.bias = nn.Parameter(
+                torch.empty(
+                    self.out_features,
+                    device=torch.device(torch.cuda.current_device()),
+                )
+            )
+        else:
+            self.register_parameter("bias", None)
+
+    def forward(self, x):
+        parallel_x = Split.apply(x)
+        parallel_out = F.linear(parallel_x, self.weight)
+        if self.world_size > 1:
+            out = Reduce.apply(parallel_out)
+        else:
+            out = parallel_out
+
+        if self.bias is not None:
+            out += self.bias
+
+        return out
+
+
 # Embed & Unembed
 class Embed(nn.Module):
     def __init__(self, cfg: Union[Dict, EasyTransformerConfig]):
@@ -45,7 +129,7 @@ class Embed(nn.Module):
         )
 
 
-class EmbedSplitVocab(nn.Module):
+class EmbedParallelSplitVocab(nn.Module):
     """
     Like nn.Embedding, but a Tensor Parallel Implementation - the matrix is split along the vocab dimension
     across devices.
@@ -98,6 +182,9 @@ class Unembed(nn.Module):
         if isinstance(cfg, Dict):
             cfg = EasyTransformerConfig.from_dict(cfg)
         self.cfg = cfg
+        assert (
+            self.cfg.d_vocab is not None
+        ), "d_vocab must be set to initialize Unembedding Module"
         self.W_U = nn.Parameter(torch.empty(self.cfg.d_vocab, self.cfg.d_model))
         self.b_U = nn.Parameter(torch.empty(self.cfg.d_vocab))
 
@@ -105,6 +192,49 @@ class Unembed(nn.Module):
         return (
             torch.einsum("vm,bpm->bpv", self.W_U, tokens) + self.b_U
         )  # [batch, pos, d_vocab]
+
+
+class UnembedParallelSplitVocab(nn.Module):
+    """
+    Tensor Parallel Unembed layer for Transformer (assuming embedding weights aren't tied). The
+    weight matrix is distributed across devices by splitting along the vocab dimension. Note that
+    this is just a linear layer with a bias, so it's not really a unembedding layer.
+    """
+
+    def __init__(self, cfg: Union[Dict, EasyTransformerConfig]):
+        super().__init__()
+        if isinstance(cfg, Dict):
+            cfg = EasyTransformerConfig.from_dict(cfg)
+        self.cfg = cfg
+        self.world_size = get_tensor_parallel_world_size()
+        self.rank = get_tensor_parallel_rank()
+        assert torch.cuda.is_available(), "UnembedSplitVocab requires CUDA"
+        assert (
+            self.cfg.d_vocab is not None
+        ), "d_vocab must be set to initialize Unembed Module"
+        self.W_U = nn.Parameter(
+            torch.empty(
+                self.cfg.d_vocab // self.world_size,
+                self.cfg.d_model,
+                device=torch.device(torch.cuda.current_device()),
+            )
+        )
+        self.b_U = nn.Parameter(
+            torch.empty(
+                self.cfg.d_vocab // self.world_size,
+                device=torch.device(torch.cuda.current_device()),
+            )
+        )
+
+    def forward(self, tokens):
+        parallel_out = torch.einsum("vm,bpm->bpv", self.W_U, tokens) + self.b_U
+
+        if self.world_size > 1:
+            out = Gather.apply(parallel_out)
+        else:
+            out = parallel_out
+
+        return out
 
 
 # Positional Embeddings
@@ -339,6 +469,35 @@ class Attention(nn.Module):
         )
 
 
+class AttentionParallelSplitHeads(nn.Module):
+    """
+    Tensor Parallel Attention layer, with the computation split along heads.
+    """
+
+    def __init__(self, cfg: Union[Dict, EasyTransformerConfig], attn_type="global"):
+        super().__init__()
+        if isinstance(cfg, Dict):
+            cfg = EasyTransformerConfig.from_dict(cfg)
+        self.cfg = cfg
+        self.world_size = get_tensor_parallel_world_size()
+        self.rank = get_tensor_parallel_rank()
+        self.device = torch.device(torch.cuda.current_device())
+        self.local_cfg = self.cfg
+        self.local_cfg.n_heads = self.cfg.n_heads // self.world_size
+        self.inner = Attention(self.local_cfg, attn_type).to(self.device)
+
+    def forward(
+        self, x, cache_entry: Optional[EasyTransformerKeyValueCacheEntry] = None
+    ):
+        parallel_out = self.inner(x, cache_entry)
+        if self.world_size > 1:
+            out = Reduce.apply(parallel_out)
+        else:
+            out = parallel_out
+
+        return out
+
+
 # MLP Layers
 class MLP(nn.Module):
     def __init__(self, cfg: Union[Dict, EasyTransformerConfig]):
@@ -346,12 +505,9 @@ class MLP(nn.Module):
         if isinstance(cfg, Dict):
             cfg = EasyTransformerConfig.from_dict(cfg)
         self.cfg = cfg
+        assert self.cfg.d_mlp is not None, "d_mlp must be specified for MLP"
         self.W_in = nn.Parameter(torch.empty(self.cfg.d_mlp, self.cfg.d_model))
         self.b_in = nn.Parameter(torch.empty(self.cfg.d_mlp))
-        if self.cfg.gated_act_fn:
-            self.W_gate = nn.Parameter(torch.empty(self.cfg.d_mlp, self.cfg.d_model))
-            self.b_gate = nn.Parameter(torch.empty(self.cfg.d_mlp))
-            self.hook_gate = HookPoint()
         self.W_out = nn.Parameter(torch.empty(self.cfg.d_model, self.cfg.d_mlp))
         self.b_out = nn.Parameter(torch.empty(self.cfg.d_model))
 
@@ -384,12 +540,80 @@ class MLP(nn.Module):
             torch.einsum("md,bpd->bpm", self.W_in, x) + self.b_in
         )  # [batch, pos, d_mlp]
         post_act = self.hook_post(self.act_fn(pre_act))  # [batch, pos, d_mlp]
+        assert self.cfg.act_fn is not None, "act_fn must be specified for MLP"
         if self.cfg.act_fn.endswith("_ln"):
             post_act = self.hook_post_ln(self.ln(post_act))
         mlp_out = (
             torch.einsum("dm,bpm->bpd", self.W_out, post_act) + self.b_out
         )  # [batch, pos, d_model]
         return mlp_out
+
+
+class MLPParallel(nn.Module):
+    """
+    Tensor Parallel MLP layer, minimizing the communication across devices by
+    splitting the first linear layer by column and the second by rows.
+    """
+
+    def __init__(self, cfg: Union[Dict, EasyTransformerConfig]):
+        super().__init__()
+        if isinstance(cfg, Dict):
+            cfg = EasyTransformerConfig.from_dict(cfg)
+        self.cfg = cfg
+        self.world_size = get_tensor_parallel_world_size()
+        self.rank = get_tensor_parallel_rank()
+        self.device = torch.device(torch.cuda.current_device())
+        assert self.cfg.d_mlp is not None, "d_mlp must be specified for MLPParallel"
+        self.W_in = nn.Parameter(
+            torch.empty(self.cfg.d_mlp // self.world_size, self.cfg.d_model)
+        )
+        self.b_in = nn.Parameter(torch.empty(self.cfg.d_mlp // self.world_size))
+        self.W_out = nn.Parameter(
+            torch.empty(self.cfg.d_model, self.cfg.d_mlp // self.world_size)
+        )
+        self.b_out = nn.Parameter(torch.empty(self.cfg.d_model))
+
+        self.hook_pre = HookPoint()  # [batch, pos, d_mlp]
+        self.hook_post = HookPoint()  # [batch, pos, d_mlp]
+
+        if self.cfg.act_fn == "relu":
+            self.act_fn = F.relu
+        elif self.cfg.act_fn == "gelu":
+            self.act_fn = F.gelu
+        elif self.cfg.act_fn == "silu":
+            self.act_fn = F.silu
+        elif self.cfg.act_fn == "glu":
+            self.act_fn = F.glu
+        elif self.cfg.act_fn == "gelu_new":
+            self.act_fn = gelu_new
+        elif self.cfg.act_fn == "solu_ln":
+            self.act_fn = solu
+            self.hook_post_ln = HookPoint()  # [batch, pos, d_mlp]
+            self.ln = (
+                TritonLayerNorm(self.cfg, self.cfg.d_mlp)
+                if self.cfg.use_triton
+                else LayerNorm(self.cfg, self.cfg.d_mlp)
+            )
+        else:
+            raise ValueError(f"Invalid activation function name: {self.cfg.act_fn}")
+
+    def forward(self, x):
+        pre_act = self.hook_pre(torch.einsum("md,bpd->bpm", self.W_in, x) + self.b_in)
+
+        post_act = self.hook_post(self.act_fn(pre_act))
+
+        assert self.cfg.act_fn is not None, "act_fn must be specified for MLP"
+        if self.cfg.act_fn.endswith("_ln"):
+            post_act = self.hook_post_ln(self.ln(post_act))
+
+        parallel_out = torch.einsum("dm,bpm->bpd", self.W_out, post_act) + self.b_out
+
+        if self.world_size > 1:
+            out = Reduce.apply(parallel_out)
+        else:
+            out = parallel_out
+
+        return out
 
 
 # Transformer Block
