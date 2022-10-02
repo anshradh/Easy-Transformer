@@ -680,6 +680,72 @@ class TransformerBlock(nn.Module):
         return resid_post
 
 
+class TransformerParallelBlock(nn.Module):
+    def __init__(self, cfg: Union[Dict, EasyTransformerConfig], block_index):
+        super().__init__()
+        if isinstance(cfg, Dict):
+            cfg = EasyTransformerConfig.from_dict(cfg)
+        self.cfg = cfg
+        if self.cfg.normalization_type == "LN":
+            self.ln1 = LayerNorm(cfg)
+            self.ln2 = LayerNorm(cfg)
+        elif self.cfg.normalization_type == "LNPre":
+            # We've folded in LayerNorm weights, so just need the center + scale parts
+            self.ln1 = LayerNormPre(cfg)
+            self.ln2 = LayerNormPre(cfg)
+        elif self.cfg.normalization_type == "triton":
+            self.ln1 = TritonLayerNorm(cfg)
+            self.ln2 = TritonLayerNorm(cfg)
+        elif self.cfg.normalization_type is None:
+            # If it's None, don't create either layer
+            self.ln1 = nn.Identity()
+            self.ln2 = nn.Identity()
+        else:
+            logging.warning(
+                f"Invalid normalization_type passed in {self.cfg.normalization_type}"
+            )
+
+        self.world_size = get_tensor_parallel_world_size()
+        self.rank = get_tensor_parallel_rank()
+
+        if not self.cfg.use_local_attn:
+            self.attn = AttentionParallelSplitHeads(cfg, "global")
+        else:
+            assert self.cfg.attn_types is not None
+            attn_type = self.cfg.attn_types[block_index]
+            self.attn = AttentionParallelSplitHeads(cfg, attn_type)
+        self.mlp = MLPParallel(cfg)
+
+        self.hook_attn_out = HookPoint()  # [batch, pos, d_model]
+        self.hook_mlp_out = HookPoint()  # [batch, pos, d_model]
+        self.hook_resid_pre = HookPoint()  # [batch, pos, d_model]
+        self.hook_resid_mid = HookPoint()  # [batch, pos, d_model]
+        self.hook_resid_post = HookPoint()  # [batch, pos, d_model]
+
+    def forward(
+        self, x, cache_entry: Optional[EasyTransformerKeyValueCacheEntry] = None
+    ):
+        resid_pre = self.hook_resid_pre(x)  # [batch, pos, d_model]
+        if self.cfg.normalization_type is not None:
+            normalized_resid_pre = self.ln1(resid_pre)
+        else:
+            normalized_resid_pre = resid_pre
+        attn_out = self.hook_attn_out(
+            self.attn(normalized_resid_pre, cache_entry)
+        )  # [batch, pos, d_model]
+        resid_mid = self.hook_resid_mid(resid_pre + attn_out)  # [batch, pos, d_model]
+
+        if self.cfg.normalization_type is not None:
+            normalized_resid_mid = self.ln2(resid_mid)
+        else:
+            normalized_resid_mid = resid_mid
+        mlp_out = self.hook_mlp_out(
+            self.mlp(normalized_resid_mid)
+        )  # [batch, pos, d_model]
+        resid_post = self.hook_resid_post(resid_mid + mlp_out)  # [batch, pos, d_model]
+        return resid_post
+
+
 class AttnOnlyBlock(nn.Module):
     def __init__(self, cfg: Union[Dict, EasyTransformerConfig], block_index):
         super().__init__()
@@ -706,6 +772,52 @@ class AttnOnlyBlock(nn.Module):
             assert self.cfg.attn_types is not None
             attn_type = self.cfg.attn_types[block_index]
             self.attn = Attention(cfg, attn_type)
+
+        self.hook_attn_out = HookPoint()  # [batch, pos, d_model]
+        self.hook_resid_pre = HookPoint()  # [batch, pos, d_model]
+        self.hook_resid_post = HookPoint()  # [batch, pos, d_model]
+
+    def forward(
+        self, x, cache_entry: Optional[EasyTransformerKeyValueCacheEntry] = None
+    ):
+        resid_pre = self.hook_resid_pre(x)  # [batch, pos, d_model]
+        normalized_resid_pre = self.ln1(resid_pre)
+        attn_out = self.hook_attn_out(
+            self.attn(normalized_resid_pre, cache_entry)
+        )  # [batch, pos, d_model]
+        resid_post = self.hook_resid_post(resid_pre + attn_out)  # [batch, pos, d_model]
+        return resid_post
+
+
+class AttnOnlyParallelBlock(nn.Module):
+    def __init__(self, cfg: Union[Dict, EasyTransformerConfig], block_index):
+        super().__init__()
+        if isinstance(cfg, Dict):
+            cfg = EasyTransformerConfig.from_dict(cfg)
+        self.cfg = cfg
+        if self.cfg.normalization_type == "LN":
+            self.ln1 = LayerNorm(cfg)
+        elif self.cfg.normalization_type == "LNPre":
+            # We've folded in LayerNorm weights, so just need the center + scale parts
+            self.ln1 = LayerNormPre(cfg)
+        elif self.cfg.normalization_type == "triton":
+            self.ln1 = TritonLayerNorm(cfg)
+        elif self.cfg.normalization_type is None:
+            self.ln1 = nn.Identity()
+        else:
+            logging.warning(
+                f"Invalid normalization_type passed in {self.cfg.normalization_type}"
+            )
+
+        self.world_size = get_tensor_parallel_world_size()
+        self.rank = get_tensor_parallel_rank()
+
+        if not self.cfg.use_local_attn:
+            self.attn = AttentionParallelSplitHeads(cfg, "global")
+        else:
+            assert self.cfg.attn_types is not None
+            attn_type = self.cfg.attn_types[block_index]
+            self.attn = AttentionParallelSplitHeads(cfg, attn_type)
 
         self.hook_attn_out = HookPoint()  # [batch, pos, d_model]
         self.hook_resid_pre = HookPoint()  # [batch, pos, d_model]
