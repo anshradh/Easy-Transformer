@@ -58,6 +58,7 @@ class EasyTransformerConfig:
             layers. Defaults to False
         seed (int, *optional*): The seed to use for the model. Defaults to 42. Used to set sources of randomness (Python, PyTorch and NumPy) and to initialize weights. If set to None, does nothing.
         initializer_range (float): The standard deviation of the truncated normal used to initialise the weights.
+        tensor_parallel_size (int): The number of tensor parallel groups to use. Defaults to 1.
         use_triton (bool): Whether to use custom triton kernels. Defaults to False. If true, overwrites normalization_type to "triton"
     """
 
@@ -88,6 +89,7 @@ class EasyTransformerConfig:
     attn_only: bool = False
     seed: int = 42
     initializer_range: float = 0.02
+    tensor_parallel_size: int = 1
     use_triton: bool = False
 
     def __post_init__(self):

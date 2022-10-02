@@ -88,7 +88,7 @@ class EasyTransformer(HookedRootModule):
 
     VALID_PRETRAINED_MODEL_NAMES = weight_conversion.VALID_PRETRAINED_MODEL_NAMES
     PRETRAINED_MODEL_NAMES_DICT = weight_conversion.PRETRAINED_MODEL_NAMES_DICT
-    STANFORD_CRFM_CHECKPOINTS = weight_conversion.
+    STANFORD_CRFM_CHECKPOINTS = weight_conversion.STANFORD_CRFM_CHECKPOINTS
 
     def __init__(
         self,
