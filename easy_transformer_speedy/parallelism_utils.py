@@ -8,6 +8,7 @@ DATA_PARALLEL_GROUP = None
 TENSOR_PARALLEL_GROUP = None
 PIPELINE_PARALLEL_GROUP = None
 EMBEDDING_GROUP = None
+PROCESS_GROUPS_INITIALIZED = False
 
 
 def initialize_parallel_groups(
@@ -78,6 +79,8 @@ def initialize_parallel_groups(
         group = dist.new_group(embedding_ranks)
         if rank in embedding_ranks:
             EMBEDDING_GROUP = group
+    global PROCESS_GROUPS_INITIALIZED
+    PROCESS_GROUPS_INITIALIZED = True
 
 
 def partition(n: int, rank: int, world_size: int, even_split: bool = True):
@@ -101,21 +104,25 @@ def partition(n: int, rank: int, world_size: int, even_split: bool = True):
     return slice(start, end)
 
 
-def reduce(x: torch.Tensor, group: dist.ProcessGroup):
+def reduce(x: torch.Tensor):
     """
     Reduces the tensor x across all processes. This is used for Tensor Parallel Modules, to help
     sum the parameters across GPUs.
 
     Args:
         x (torch.Tensor): The tensor to reduce.
-        group (dist.ProcessGroup): The process group to reduce across.
 
     Returns:
         torch.Tensor: The reduced tensor.
     """
+    global PROCESS_GROUPS_INITIALIZED, TENSOR_PARALLEL_GROUP
+    assert PROCESS_GROUPS_INITIALIZED, "Process groups must be initialized"
+    assert (
+        TENSOR_PARALLEL_GROUP is not None
+    ), "Tensor Parallel Group must be initialized"
     if dist.get_world_size() == 1:
         return x
-    dist.all_reduce(x, group=group)
+    dist.all_reduce(x, group=TENSOR_PARALLEL_GROUP)
     return x
 
 
@@ -126,33 +133,46 @@ def split(x: torch.Tensor):
 
     Args:
         x (torch.Tensor): The tensor to split.
-        group (dist.ProcessGroup): The process group to split across.
 
     Returns:
         torch.Tensor: The split tensor.
     """
+    global PROCESS_GROUPS_INITIALIZED, TENSOR_PARALLEL_GROUP
+    assert PROCESS_GROUPS_INITIALIZED, "Process groups must be initialized"
+    assert (
+        TENSOR_PARALLEL_GROUP is not None
+    ), "Tensor Parallel Group must be initialized"
     if dist.get_world_size() == 1:
         return x
-    return x.chunk(dist.get_world_size(), dim=-1)[dist.get_rank()].contiguous()
+    return x.chunk(dist.get_world_size(group=TENSOR_PARALLEL_GROUP), dim=-1)[
+        dist.get_rank(group=TENSOR_PARALLEL_GROUP)
+    ].contiguous()
 
 
-def gather(x: torch.Tensor, group: dist.ProcessGroup):
+def gather(x: torch.Tensor):
     """
     Gathers the tensor x across all processes. This is used for Tensor Parallel Modules, to help
     gather the output across GPUs.
 
     Args:
         x (torch.Tensor): The tensor to gather.
-        group (dist.ProcessGroup): The process group to gather across.
 
     Returns:
         torch.Tensor: The gathered tensor.
     """
+    global PROCESS_GROUPS_INITIALIZED, TENSOR_PARALLEL_GROUP
+    assert PROCESS_GROUPS_INITIALIZED, "Process groups must be initialized"
+    assert (
+        TENSOR_PARALLEL_GROUP is not None
+    ), "Tensor Parallel Group must be initialized"
     if dist.get_world_size() == 1:
         return x
-    tensors = [torch.empty_like(x) for _ in range(dist.get_world_size())]
-    tensors[dist.get_rank()] = x
-    dist.all_gather(tensors, x, group=group)
+    tensors = [
+        torch.empty_like(x)
+        for _ in range(dist.get_world_size(group=TENSOR_PARALLEL_GROUP))
+    ]
+    tensors[dist.get_rank(group=TENSOR_PARALLEL_GROUP)] = x
+    dist.all_gather(tensors, x, group=TENSOR_PARALLEL_GROUP)
     return torch.cat(tensors, dim=-1).contiguous()
 
 
@@ -172,3 +192,57 @@ class Copy(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dy):
         return reduce(dy)
+
+
+class Reduce(torch.autograd.Function):
+    """
+    Reduce the input tensor across all processes.
+    """
+
+    @staticmethod
+    def symbolic(graph, x):
+        return reduce(x)
+
+    @staticmethod
+    def forward(ctx, x):
+        return reduce(x)
+
+    @staticmethod
+    def backward(ctx, dy):
+        return dy
+
+
+class Split(torch.autograd.Function):
+    """
+    Split the input tensor across all processes.
+    """
+
+    @staticmethod
+    def symbolic(graph, x):
+        return split(x)
+
+    @staticmethod
+    def forward(ctx, x):
+        return split(x)
+
+    @staticmethod
+    def backward(ctx, dy):
+        return gather(dy)
+
+
+class Gather(torch.autograd.Function):
+    """
+    Gather the input tensor across all processes.
+    """
+
+    @staticmethod
+    def symbolic(graph, x):
+        return gather(x)
+
+    @staticmethod
+    def forward(ctx, x):
+        return gather(x)
+
+    @staticmethod
+    def backward(ctx, dy):
+        return split(dy)
