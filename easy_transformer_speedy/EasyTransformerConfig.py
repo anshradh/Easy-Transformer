@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from typing import Union, Tuple, List, Dict, Any, Optional
 import torch
 import torch.nn as nn
+import numpy as np
+import random
 
 
 @dataclass
@@ -12,12 +14,12 @@ class EasyTransformerConfig:
         d_model (int): The dimensionality of the embeddings.
         d_head (int): The dimensionality of each attention head.
         n_heads (int): The number of attention heads.
-        d_mlp (int): The dimensionality of the feedforward mlp network.
         n_layers (int): The number of attention layers.
         n_ctx (int): The maximum sequence length.
+        d_mlp (int, *optional): The dimensionality of the feedforward mlp network. Must be set unless using an attn-only model.
+        act_fn (str): The activation function to use. Always lowercase. Supports ['relu', 'gelu', 'silu', 'glu', 'gelu_new', 'solu_ln']. Must be set unless using an attn-only model.
         d_vocab (int): The size of the vocabulary. If not set, will be automatically set
             from the tokenizer's vocab size.
-        act_fn (str): The activation function to use. Always lowercase. Supports ['relu', 'gelu', 'silu', 'glu', 'gelu_new', 'solu_ln', 'reglu', 'geglu', 'swiglu'].
         eps (float): The epsilon value to use for layer normalization. Defaults to 1e-5
         use_attn_result (bool): whether to explicitly calculate the amount
             each head adds to the residual stream (with a hook) and THEN add it
@@ -47,17 +49,25 @@ class EasyTransformerConfig:
             are None (no normalization), 'LN' (use LayerNorm, including weights &
             biases) and 'LNPre' (use LayerNorm, but no weights & biases). Defaults to
             None
-        gated_act_fn (bool): Whether a gated activation function is being used (geglu, reglu, swiglu). Automatically set from act_fn. Used to determine whether to create an extra MLP weight matrix W_gate
+        device(str): The device to use for the model. Defaults to 'cuda' if available,
+            else 'cpu
+        attention_dir (str): Whether to use causal (aka unidirectional aka GPT-2
+            style) or bidirectional attention. Options are 'causal' and 'bidirectional'.
+            Defaults to 'causal'
+        attn_only (bool): Whether to only use attention layers, no feedforward
+            layers. Defaults to False
+        seed (int, *optional*): The seed to use for the model. Defaults to 42. Used to set sources of randomness (Python, PyTorch and NumPy) and to initialize weights. If set to None, does nothing.
+        initializer_range (float): The standard deviation of the truncated normal used to initialise the weights.
         use_triton (bool): Whether to use custom triton kernels. Defaults to False. If true, overwrites normalization_type to "triton"
     """
 
     d_model: int
     d_head: int
     n_heads: int
-    d_mlp: int
     n_layers: int
     n_ctx: int
-    act_fn: str
+    d_mlp: Optional[int] = None
+    act_fn: Optional[str] = None
     d_vocab: Optional[int] = None
     eps: float = 1e-5
     use_attn_result: bool = False
@@ -73,10 +83,19 @@ class EasyTransformerConfig:
     init_mode: str = "gpt2"
     normalization_type: Optional[str] = None
     gated_act_fn: bool = False
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    attention_dir: str = "causal"
+    attn_only: bool = False
+    seed: int = 42
+    initializer_range: float = 0.02
     use_triton: bool = False
 
     def __post_init__(self):
         assert self.d_model % self.n_heads == 0, "d_model must be divisible by n_heads"
+        if self.seed is not None:
+            random.seed(self.seed)
+            torch.manual_seed(self.seed)
+            np.random.seed(self.seed)
         if self.use_local_attn:
             assert (
                 self.window_size is not None
@@ -88,8 +107,13 @@ class EasyTransformerConfig:
             self.model_name = "custom"
             self.model_type = "custom"
             self.full_model_name = "custom"
-        if self.act_fn in ["reglu", "geglu", "swiglu"]:
-            self.gated_act_fn = True
+        if not self.attn_only:
+            assert (
+                self.d_mlp is not None
+            ), "d_mlp must be specified for non-attn-only models"
+            assert (
+                self.act_fn is not None
+            ), "act_fn must be specified for non-attn-only models"
         if self.use_triton:
             self.normalization_type = "triton"
 
