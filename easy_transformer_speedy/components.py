@@ -12,7 +12,7 @@ import torch.distributed as dist
 from functools import *
 
 from easy_transformer_speedy.hook_points import HookPoint
-from easy_transformer_speedy.utils import gelu_new, solu, partition
+from easy_transformer_speedy.utils import gelu_new, solu
 
 from triton_modules.TritonLayerNorm import triton_layernorm
 
@@ -23,6 +23,8 @@ from easy_transformer_speedy.EasyTransformerKeyValueCache import (
 
 from easy_transformer_speedy.EasyTransformerConfig import EasyTransformerConfig
 
+from easy_transformer_speedy.parallelism_utils import *
+
 # Embed & Unembed
 class Embed(nn.Module):
     def __init__(self, cfg: Union[Dict, EasyTransformerConfig]):
@@ -30,6 +32,9 @@ class Embed(nn.Module):
         if isinstance(cfg, Dict):
             cfg = EasyTransformerConfig.from_dict(cfg)
         self.cfg = cfg
+        assert (
+            self.cfg.d_vocab is not None
+        ), "d_vocab must be set to initialize Embedding Module"
         self.W_E = nn.Parameter(torch.empty(self.cfg.d_model, self.cfg.d_vocab))
 
     def forward(self, tokens):
@@ -51,7 +56,40 @@ class EmbedSplitVocab(nn.Module):
         if isinstance(cfg, Dict):
             cfg = EasyTransformerConfig.from_dict(cfg)
         self.cfg = cfg
-        self.W_E = nn.Parameter(torch.empty(self.cfg.d_model, self.cfg.d_vocab))
+        self.world_size = get_tensor_parallel_world_size()
+        self.rank = get_tensor_parallel_rank()
+        assert (
+            self.cfg.d_vocab is not None
+        ), "d_vocab must be set to initialize Embedding Module"
+        assert torch.cuda.is_available(), "EmbedSplitVocab requires CUDA"
+        self.W_E = nn.Parameter(
+            torch.empty(
+                self.cfg.d_vocab // self.world_size,
+                self.cfg.d_model,
+                device=torch.device(torch.cuda.current_device()),
+            )
+        )
+
+        self.embedding_slice = partition(self.cfg.d_vocab, self.rank, self.world_size)
+        self.start = self.embedding_slice.start
+        self.stop = self.embedding_slice.stop
+
+    def forward(self, tokens):
+        mask = (tokens < self.start) & (tokens >= self.stop)
+        if self.world_size > 1:
+            masked_tokens = tokens.clone() - self.start
+            masked_tokens[mask] = 0.0
+        else:
+            masked_tokens = tokens
+
+        parallel_out = F.embedding(masked_tokens, self.W_E)
+
+        if self.world_size > 1:
+            parallel_out[mask, :] = 0.0
+
+        out = Reduce.apply(parallel_out)
+
+        return out
 
 
 class Unembed(nn.Module):

@@ -83,6 +83,158 @@ def initialize_parallel_groups(
     PROCESS_GROUPS_INITIALIZED = True
 
 
+def parallel_groups_initialized():
+    """
+    Returns whether or not the process groups have been initialized.
+
+    Returns:
+        bool: True if the process groups have been initialized, False otherwise.
+    """
+    return PROCESS_GROUPS_INITIALIZED
+
+
+def get_data_parallel_rank():
+    """
+    Returns the rank of the current process in the data parallel group.
+
+    Returns:
+        int: The rank of the current process in the data parallel group.
+    """
+    global PROCESS_GROUPS_INITIALIZED, DATA_PARALLEL_GROUP
+    assert PROCESS_GROUPS_INITIALIZED, "Process groups must be initialized"
+    assert DATA_PARALLEL_GROUP is not None, "Data Parallel Group must be initialized"
+    return dist.get_rank(group=DATA_PARALLEL_GROUP)
+
+
+def get_tensor_parallel_rank():
+    """
+    Returns the rank of the current process in the tensor parallel group.
+
+    Returns:
+        int: The rank of the current process in the tensor parallel group.
+    """
+    global PROCESS_GROUPS_INITIALIZED, TENSOR_PARALLEL_GROUP
+    assert PROCESS_GROUPS_INITIALIZED, "Process groups must be initialized"
+    assert (
+        TENSOR_PARALLEL_GROUP is not None
+    ), "Tensor Parallel Group must be initialized"
+    return dist.get_rank(group=TENSOR_PARALLEL_GROUP)
+
+
+def get_pipeline_parallel_rank():
+    """
+    Returns the rank of the current process in the pipeline parallel group.
+
+    Returns:
+        int: The rank of the current process in the pipeline parallel group.
+    """
+    global PROCESS_GROUPS_INITIALIZED, PIPELINE_PARALLEL_GROUP
+    assert PROCESS_GROUPS_INITIALIZED, "Process groups must be initialized"
+    assert (
+        PIPELINE_PARALLEL_GROUP is not None
+    ), "Pipeline Parallel Group must be initialized"
+    return dist.get_rank(group=PIPELINE_PARALLEL_GROUP)
+
+
+def get_data_parallel_world_size():
+    """
+    Returns the world size of the data parallel group.
+
+    Returns:
+        int: The world size of the data parallel group.
+    """
+    global PROCESS_GROUPS_INITIALIZED, DATA_PARALLEL_GROUP
+    assert PROCESS_GROUPS_INITIALIZED, "Process groups must be initialized"
+    assert DATA_PARALLEL_GROUP is not None, "Data Parallel Group must be initialized"
+    return dist.get_world_size(group=DATA_PARALLEL_GROUP)
+
+
+def get_tensor_parallel_world_size():
+    """
+    Returns the world size of the tensor parallel group.
+
+    Returns:
+        int: The world size of the tensor parallel group.
+    """
+    global PROCESS_GROUPS_INITIALIZED, TENSOR_PARALLEL_GROUP
+    assert PROCESS_GROUPS_INITIALIZED, "Process groups must be initialized"
+    assert (
+        TENSOR_PARALLEL_GROUP is not None
+    ), "Tensor Parallel Group must be initialized"
+    return dist.get_world_size(group=TENSOR_PARALLEL_GROUP)
+
+
+def get_pipeline_parallel_world_size():
+    """
+    Returns the world size of the pipeline parallel group.
+
+    Returns:
+        int: The world size of the pipeline parallel group.
+    """
+    global PROCESS_GROUPS_INITIALIZED, PIPELINE_PARALLEL_GROUP
+    assert PROCESS_GROUPS_INITIALIZED, "Process groups must be initialized"
+    assert (
+        PIPELINE_PARALLEL_GROUP is not None
+    ), "Pipeline Parallel Group must be initialized"
+    return dist.get_world_size(group=PIPELINE_PARALLEL_GROUP)
+
+
+def get_data_parallel_group():
+    """
+    Returns the data parallel group for the current process.
+
+    Returns:
+        torch.distributed.ProcessGroup: The data parallel group.
+    """
+    global PROCESS_GROUPS_INITIALIZED, DATA_PARALLEL_GROUP
+    assert PROCESS_GROUPS_INITIALIZED, "Process groups must be initialized"
+    assert DATA_PARALLEL_GROUP is not None, "Data Parallel Group must be initialized"
+    return DATA_PARALLEL_GROUP
+
+
+def get_tensor_parallel_group():
+    """
+    Returns the tensor parallel group for the current process.
+
+    Returns:
+        torch.distributed.ProcessGroup: The tensor parallel group.
+    """
+    global PROCESS_GROUPS_INITIALIZED, TENSOR_PARALLEL_GROUP
+    assert PROCESS_GROUPS_INITIALIZED, "Process groups must be initialized"
+    assert (
+        TENSOR_PARALLEL_GROUP is not None
+    ), "Tensor Parallel Group must be initialized"
+    return TENSOR_PARALLEL_GROUP
+
+
+def get_pipeline_parallel_group():
+    """
+    Returns the pipeline parallel group for the current process.
+
+    Returns:
+        torch.distributed.ProcessGroup: The pipeline parallel group.
+    """
+    global PROCESS_GROUPS_INITIALIZED, PIPELINE_PARALLEL_GROUP
+    assert PROCESS_GROUPS_INITIALIZED, "Process groups must be initialized"
+    assert (
+        PIPELINE_PARALLEL_GROUP is not None
+    ), "Pipeline Parallel Group must be initialized"
+    return PIPELINE_PARALLEL_GROUP
+
+
+def get_embedding_group():
+    """
+    Returns the embedding group for the current process.
+
+    Returns:
+        torch.distributed.ProcessGroup: The embedding group.
+    """
+    global PROCESS_GROUPS_INITIALIZED, EMBEDDING_GROUP
+    assert PROCESS_GROUPS_INITIALIZED, "Process groups must be initialized"
+    assert EMBEDDING_GROUP is not None, "Embedding Group must be initialized"
+    return EMBEDDING_GROUP
+
+
 def partition(n: int, rank: int, world_size: int, even_split: bool = True):
     """
     Partitions a sequence of n elements into a slice object representing that rank's partition. This
