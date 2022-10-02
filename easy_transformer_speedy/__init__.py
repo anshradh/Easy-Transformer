@@ -3,7 +3,7 @@ from . import EasyTransformer
 from . import experiments
 from . import utils
 from . import triton_modules
-from . import tensor_parallel_utils
+from . import parallelism_utils
 from .EasyTransformerConfig import EasyTransformerConfig
 from .EasyTransformerKeyValueCache import (
     EasyTransformerKeyValueCache,
