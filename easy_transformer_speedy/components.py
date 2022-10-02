@@ -7,13 +7,12 @@ import numpy as np
 import einops
 import logging
 
+import torch.distributed as dist
+
 from functools import *
 
 from easy_transformer_speedy.hook_points import HookPoint
-from easy_transforme_speedy.utils import (
-    gelu_new,
-    solu,
-)
+from easy_transformer_speedy.utils import gelu_new, solu, partition
 
 from triton_modules.TritonLayerNorm import triton_layernorm
 
@@ -39,6 +38,20 @@ class Embed(nn.Module):
         return einops.rearrange(
             self.W_E[:, tokens], "d_model batch pos -> batch pos d_model"
         )
+
+
+class EmbedSplitVocab(nn.Module):
+    """
+    Like nn.Embedding, but a Tensor Parallel Implementation - the matrix is split along the vocab dimension
+    across devices.
+    """
+
+    def __init__(self, cfg: Union[Dict, EasyTransformerConfig]):
+        super().__init__()
+        if isinstance(cfg, Dict):
+            cfg = EasyTransformerConfig.from_dict(cfg)
+        self.cfg = cfg
+        self.W_E = nn.Parameter(torch.empty(self.cfg.d_model, self.cfg.d_vocab))
 
 
 class Unembed(nn.Module):
