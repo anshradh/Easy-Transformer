@@ -90,6 +90,7 @@ class EasyTransformerConfig:
     seed: int = 42
     initializer_range: float = 0.02
     tensor_parallel_size: int = 1
+    pipeline_parallel_size: int = 1
     use_triton: bool = False
 
     def __post_init__(self):
@@ -118,6 +119,8 @@ class EasyTransformerConfig:
             ), "act_fn must be specified for non-attn-only models"
         if self.use_triton:
             self.normalization_type = "triton"
+        if self.pipeline_parallel_size > 1:
+            raise NotImplementedError("Pipeline parallelism is not yet supported")
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]):

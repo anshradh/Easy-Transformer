@@ -52,6 +52,8 @@ from easy_transformer_speedy.EasyTransformerKeyValueCache import (
     EasyTransformerKeyValueCacheEntry,
 )
 
+from .parallelism_utils import *
+
 from easy_transformer_speedy.components import *
 
 import easy_transformer_speedy.weight_conversion as weight_conversion
@@ -125,6 +127,9 @@ class EasyTransformer(HookedRootModule):
         super().__init__()
         if model_name == "custom":
             assert cfg is not None, "Must provide a config for custom model"
+            assert (
+                cfg.tensor_parallel_size == 1
+            ), "Load ParallelEasyTransformer instead if you'd like to use tensor parallelism"
             self.cfg = cfg
             self.model_name = cfg.model_name
             self.model_type = cfg.model_type
@@ -195,20 +200,20 @@ class EasyTransformer(HookedRootModule):
         self.pos_embed = PosEmbed(self.cfg)
         self.hook_pos_embed = HookPoint()  # [batch, pos, d__dictmodel]
 
-        if self.cfg.atnn_only:
+        if self.cfg.attn_only:
             self.blocks = nn.ModuleList(
                 [
-                    AttentionOnlyBlock(self.cfg, block_index)
+                    AttnOnlyBlock(self.cfg, block_index)
                     for block_index in range(self.cfg.n_layers)
                 ]
             )
-
-        self.blocks = nn.ModuleList(
-            [
-                TransformerBlock(self.cfg, block_index)
-                for block_index in range(self.cfg.n_layers)
-            ]
-        )
+        else:
+            self.blocks = nn.ModuleList(
+                [
+                    TransformerBlock(self.cfg, block_index)
+                    for block_index in range(self.cfg.n_layers)
+                ]
+            )
         if self.cfg.normalization_type == "LN":
             self.ln_final = LayerNorm(self.cfg)
         elif self.cfg.normalization_type == "LNPre":
@@ -229,7 +234,6 @@ class EasyTransformer(HookedRootModule):
         # Needed for HookPoints to work
         self.setup()
         self.to(self.cfg.device)
-
 
     def forward(
         self,
@@ -644,7 +648,15 @@ class EasyTransformer(HookedRootModule):
         return self.tokenizer(text, return_tensors="pt", padding=True)["input_ids"]
 
     @classmethod
-    def from_pretrained(cls, model_name: str, fold_ln: bool = True, center_writing_weights: bool = True, center_unembed: bool = True, keep_original_model: bool = True, **kwargs):
+    def from_pretrained(
+        cls,
+        model_name: str,
+        fold_ln: bool = True,
+        center_writing_weights: bool = True,
+        center_unembed: bool = True,
+        keep_original_model: bool = True,
+        **kwargs,
+    ):
         """
         Class method to load a pretrained model from HuggingFace and to automatically convert and load those weights into EasyTransformer format.
 
@@ -662,17 +674,29 @@ class EasyTransformer(HookedRootModule):
 
         # Load model weights, and fold in layer norm weights
         if model.model_type == "gpt2":
-            state_dict = weight_conversion.convert_gpt2_weights(model.hf_model, model.cfg)
+            state_dict = weight_conversion.convert_gpt2_weights(
+                model.hf_model, model.cfg
+            )
         elif model.model_type == "neo":
-            state_dict = weight_conversion.convert_neo_weights(model.hf_model, model.cfg)
+            state_dict = weight_conversion.convert_neo_weights(
+                model.hf_model, model.cfg
+            )
         elif model.model_type == "gptj":
-            state_dict = weight_conversion.convert_gptj_weights(model.hf_model, model.cfg)
+            state_dict = weight_conversion.convert_gptj_weights(
+                model.hf_model, model.cfg
+            )
         elif model.model_type == "neox":
-            state_dict = weight_conversion.convert_neox_weights(model.hf_model, model.cfg)
+            state_dict = weight_conversion.convert_neox_weights(
+                model.hf_model, model.cfg
+            )
         elif model.model_type == "opt":
-            state_dict = weight_conversion.convert_opt_weights(model.hf_model, model.cfg)
+            state_dict = weight_conversion.convert_opt_weights(
+                model.hf_model, model.cfg
+            )
         else:
-            logging.warning(f"Invalid model_type, no weights are stored to load: {model.model_type}, generated from model name {model.model_name}")
+            logging.warning(
+                f"Invalid model_type, no weights are stored to load: {model.model_type}, generated from model name {model.model_name}"
+            )
         state_dict = model.fill_missing_keys(state_dict)
         if fold_ln:
             state_dict = model.fold_layer_norm(state_dict)
@@ -697,7 +721,7 @@ class EasyTransformer(HookedRootModule):
         """
         if isinstance(cfg, Dict):
             cfg = EasyTransformerConfig(**cfg)
-        model =  cls(
+        model = cls(
             "custom",
             cfg,
             use_attn_result=cfg.use_attn_result,
@@ -810,11 +834,15 @@ class EasyTransformer(HookedRootModule):
         missing_keys = set(default_state_dict.keys()) - set(state_dict.keys())
         # Fill in the missing keys with the default initialization
         for key in missing_keys:
-            if 'hf_model' in key:
+            if "hf_model" in key:
                 # Skip keys that are from the HuggingFace model, if loading from HF.
                 continue
-            if 'W_' in key:
-                logging.warning("Missing key for a weight matrix in pretrained, filled in with an empty tensor: {}".format(key))
+            if "W_" in key:
+                logging.warning(
+                    "Missing key for a weight matrix in pretrained, filled in with an empty tensor: {}".format(
+                        key
+                    )
+                )
             state_dict[key] = default_state_dict[key]
         return state_dict
 
@@ -826,41 +854,193 @@ class EasyTransformer(HookedRootModule):
         for l in range(self.cfg.n_layers):
             # Fold ln1 into attention - it's important to fold biases first,
             # since biases depend on weights but not vice versa
-            state_dict[f"blocks.{l}.attn.b_Q"] = state_dict[f"blocks.{l}.attn.b_Q"] + state_dict[f"blocks.{l}.attn.W_Q"] @ state_dict[f"blocks.{l}.ln1.b"]
-            state_dict[f"blocks.{l}.attn.b_K"] = state_dict[f"blocks.{l}.attn.b_K"] + state_dict[f"blocks.{l}.attn.W_K"] @ state_dict[f"blocks.{l}.ln1.b"]
-            state_dict[f"blocks.{l}.attn.b_V"] = state_dict[f"blocks.{l}.attn.b_V"] + state_dict[f"blocks.{l}.attn.W_V"] @ state_dict[f"blocks.{l}.ln1.b"]
+            state_dict[f"blocks.{l}.attn.b_Q"] = (
+                state_dict[f"blocks.{l}.attn.b_Q"]
+                + state_dict[f"blocks.{l}.attn.W_Q"] @ state_dict[f"blocks.{l}.ln1.b"]
+            )
+            state_dict[f"blocks.{l}.attn.b_K"] = (
+                state_dict[f"blocks.{l}.attn.b_K"]
+                + state_dict[f"blocks.{l}.attn.W_K"] @ state_dict[f"blocks.{l}.ln1.b"]
+            )
+            state_dict[f"blocks.{l}.attn.b_V"] = (
+                state_dict[f"blocks.{l}.attn.b_V"]
+                + state_dict[f"blocks.{l}.attn.W_V"] @ state_dict[f"blocks.{l}.ln1.b"]
+            )
 
-            state_dict[f"blocks.{l}.attn.W_Q"] = state_dict[f"blocks.{l}.attn.W_Q"] * state_dict[f"blocks.{l}.ln1.w"]
-            state_dict[f"blocks.{l}.attn.W_K"] = state_dict[f"blocks.{l}.attn.W_K"] * state_dict[f"blocks.{l}.ln1.w"]
-            state_dict[f"blocks.{l}.attn.W_V"] = state_dict[f"blocks.{l}.attn.W_V"] * state_dict[f"blocks.{l}.ln1.w"]
-
+            state_dict[f"blocks.{l}.attn.W_Q"] = (
+                state_dict[f"blocks.{l}.attn.W_Q"] * state_dict[f"blocks.{l}.ln1.w"]
+            )
+            state_dict[f"blocks.{l}.attn.W_K"] = (
+                state_dict[f"blocks.{l}.attn.W_K"] * state_dict[f"blocks.{l}.ln1.w"]
+            )
+            state_dict[f"blocks.{l}.attn.W_V"] = (
+                state_dict[f"blocks.{l}.attn.W_V"] * state_dict[f"blocks.{l}.ln1.w"]
+            )
 
             # Fold ln2 into MLP
-            state_dict[f"blocks.{l}.mlp.b_in"] = state_dict[f"blocks.{l}.mlp.b_in"] + state_dict[f"blocks.{l}.mlp.W_in"] @ state_dict[f"blocks.{l}.ln2.b"]
-            state_dict[f"blocks.{l}.mlp.W_in"] = state_dict[f"blocks.{l}.mlp.W_in"] * state_dict[f"blocks.{l}.ln2.w"]
-            del state_dict[f"blocks.{l}.ln1.w"], state_dict[f"blocks.{l}.ln1.b"], state_dict[f"blocks.{l}.ln2.w"], state_dict[f"blocks.{l}.ln2.b"]
+            state_dict[f"blocks.{l}.mlp.b_in"] = (
+                state_dict[f"blocks.{l}.mlp.b_in"]
+                + state_dict[f"blocks.{l}.mlp.W_in"] @ state_dict[f"blocks.{l}.ln2.b"]
+            )
+            state_dict[f"blocks.{l}.mlp.W_in"] = (
+                state_dict[f"blocks.{l}.mlp.W_in"] * state_dict[f"blocks.{l}.ln2.w"]
+            )
+            del (
+                state_dict[f"blocks.{l}.ln1.w"],
+                state_dict[f"blocks.{l}.ln1.b"],
+                state_dict[f"blocks.{l}.ln2.w"],
+                state_dict[f"blocks.{l}.ln2.b"],
+            )
         # Fold ln_final into Unembed
-        state_dict[f"unembed.b_U"] = state_dict[f"unembed.W_U"] @ state_dict[f"ln_final.b"]
-        state_dict[f"unembed.W_U"] = state_dict[f"unembed.W_U"] * state_dict[f"ln_final.w"]
+        state_dict[f"unembed.b_U"] = (
+            state_dict[f"unembed.W_U"] @ state_dict[f"ln_final.b"]
+        )
+        state_dict[f"unembed.W_U"] = (
+            state_dict[f"unembed.W_U"] * state_dict[f"ln_final.w"]
+        )
         del state_dict[f"ln_final.w"], state_dict[f"ln_final.b"]
         return state_dict
 
-
     def center_writing_weights(self, state_dict: Dict[str, torch.Tensor]):
-        """Centers the weights of the model that write to the residual stream - W_out, W_E, W_pos and W_out. This is done by subtracting the mean of the weights from the weights themselves. This is done in-place. As LayerNorm centers before reading from the residual stream, this doesn't change the computation.
-        """
-        state_dict['embed.W_E'] = state_dict['embed.W_E'] - state_dict['embed.W_E'].mean(0, keepdim=True)
-        state_dict['pos_embed.W_pos'] = state_dict['pos_embed.W_pos'] - state_dict['pos_embed.W_pos'].mean(0, keepdim=True)
+        """Centers the weights of the model that write to the residual stream - W_out, W_E, W_pos and W_out. This is done by subtracting the mean of the weights from the weights themselves. This is done in-place. As LayerNorm centers before reading from the residual stream, this doesn't change the computation."""
+        state_dict["embed.W_E"] = state_dict["embed.W_E"] - state_dict[
+            "embed.W_E"
+        ].mean(0, keepdim=True)
+        state_dict["pos_embed.W_pos"] = state_dict["pos_embed.W_pos"] - state_dict[
+            "pos_embed.W_pos"
+        ].mean(0, keepdim=True)
         for l in range(self.cfg.n_layers):
-            state_dict[f'blocks.{l}.attn.W_O'] = state_dict[f'blocks.{l}.attn.W_O'] - state_dict[f'blocks.{l}.attn.W_O'].mean(1, keepdim=True) # W_O is [head_index, d_model, d_head]
-            state_dict[f'blocks.{l}.attn.b_O'] = state_dict[f'blocks.{l}.attn.b_O'] - state_dict[f'blocks.{l}.attn.b_O'].mean() # b_O is [d_model]
-            state_dict[f'blocks.{l}.mlp.W_out'] = state_dict[f'blocks.{l}.mlp.W_out'] - state_dict[f'blocks.{l}.mlp.W_out'].mean(0, keepdim=True)
-            state_dict[f'blocks.{l}.mlp.b_out'] = state_dict[f'blocks.{l}.mlp.b_out'] - state_dict[f'blocks.{l}.mlp.b_out'].mean()
+            state_dict[f"blocks.{l}.attn.W_O"] = state_dict[
+                f"blocks.{l}.attn.W_O"
+            ] - state_dict[f"blocks.{l}.attn.W_O"].mean(
+                1, keepdim=True
+            )  # W_O is [head_index, d_model, d_head]
+            state_dict[f"blocks.{l}.attn.b_O"] = (
+                state_dict[f"blocks.{l}.attn.b_O"]
+                - state_dict[f"blocks.{l}.attn.b_O"].mean()
+            )  # b_O is [d_model]
+            state_dict[f"blocks.{l}.mlp.W_out"] = state_dict[
+                f"blocks.{l}.mlp.W_out"
+            ] - state_dict[f"blocks.{l}.mlp.W_out"].mean(0, keepdim=True)
+            state_dict[f"blocks.{l}.mlp.b_out"] = (
+                state_dict[f"blocks.{l}.mlp.b_out"]
+                - state_dict[f"blocks.{l}.mlp.b_out"].mean()
+            )
         return state_dict
 
     def center_unembed(self, state_dict: Dict[str, torch.Tensor]):
-        """Centers the unembedding weights W_U. This is done by subtracting the mean of the weights from the weights themselves. This is done in-place. As softmax is translation invariant, this changes the logits but not the log probs, and makes the model logits more interpretable.
-        """
-        state_dict['unembed.W_U'] = state_dict['unembed.W_U'] - state_dict['unembed.W_U'].mean(0, keepdim=True)
-        state_dict['unembed.b_U'] = state_dict['unembed.b_U'] - state_dict['unembed.b_U'].mean()
+        """Centers the unembedding weights W_U. This is done by subtracting the mean of the weights from the weights themselves. This is done in-place. As softmax is translation invariant, this changes the logits but not the log probs, and makes the model logits more interpretable."""
+        state_dict["unembed.W_U"] = state_dict["unembed.W_U"] - state_dict[
+            "unembed.W_U"
+        ].mean(0, keepdim=True)
+        state_dict["unembed.b_U"] = (
+            state_dict["unembed.b_U"] - state_dict["unembed.b_U"].mean()
+        )
         return state_dict
+
+
+class ParallelEasyTransformer(HookedRootModule):
+    def __init__(self, model_name: str, cfg: Optional[EasyTransformerConfig] = None):
+        super().__init__()
+        if model_name == "custom":
+            assert cfg is not None, "Must provide a config for custom model"
+            assert (
+                cfg.tensor_parallel_size > 1 or cfg.pipeline_parallel_size > 1
+            ), "Must use either tensor or pipeline parallelism"
+            self.cfg = cfg
+
+            initialize_parallel_groups(
+                self.cfg.tensor_parallel_size, self.cfg.pipeline_parallel_size
+            )
+
+            self.model_name = cfg.model_name
+            self.model_type = cfg.model_type
+            if self.cfg.tokenizer_name is not None:
+                self.tokenizer = AutoTokenizer.from_pretrained(self.cfg.tokenizer_name)
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+            else:
+                # If no tokenizer name is provided, we assume we're training on an algorithmic task and will pass in tokens directly. In this case, we don't need a tokenizer.
+                self.tokenizer = None
+        else:
+            raise NotImplementedError(
+                "Only custom models are supported for now for parallelism"
+            )
+
+        if not self.cfg.d_vocab:
+            assert (
+                self.tokenizer is not None
+            ), "Must provide a tokenizer if d_vocab is not provided"
+            self.cfg.d_vocab = max(self.tokenizer.vocab.values()) + 1
+
+        self.embed = EmbedParallelSplitVocab(self.cfg)
+        self.hook_embed = HookPoint()  # [batch, pos, d_model]
+
+        self.pos_embed = PosEmbed(self.cfg)
+        self.hook_pos_embed = HookPoint()  # [batch, pos, d__dictmodel]
+
+        if self.cfg.attn_only:
+            self.blocks = nn.ModuleList(
+                [
+                    AttnOnlyParallelBlock(self.cfg, block_index)
+                    for block_index in range(self.cfg.n_layers)
+                ]
+            )
+        else:
+            self.blocks = nn.ModuleList(
+                [
+                    TransformerParallelBlock(self.cfg, block_index)
+                    for block_index in range(self.cfg.n_layers)
+                ]
+            )
+        if self.cfg.normalization_type == "LN":
+            self.ln_final = LayerNorm(self.cfg)
+        elif self.cfg.normalization_type == "LNPre":
+            # We've folded in LayerNorm weights, so just need the center + scale parts
+            self.ln_final = LayerNormPre(self.cfg)
+        elif self.cfg.normalization_type == "triton":
+            self.ln_final = TritonLayerNorm(self.cfg)
+        elif self.cfg.normalization_type is None:
+            # If it's None, don't create either layer
+            pass
+        else:
+            logging.warning(
+                f"Invalid normalization_type passed in {self.cfg.normalization_type}"
+            )
+        self.unembed = UnembedParallelSplitVocab(self.cfg)
+
+        # Gives each module a parameter with its name (relative to this root module)
+        # Needed for HookPoints to work
+        self.setup()
+        self.to(self.cfg.device)
+
+    @classmethod
+    def from_config(cls, cfg: EasyTransformerConfig):
+        if isinstance(cfg, Dict):
+            cfg = EasyTransformerConfig(**cfg)
+        model = cls(
+            "custom",
+            cfg,
+        )
+        model.init_weights()
+        return model
+
+    def init_weights(self):
+        """
+        Initialize weights matrices with a normal of std=initializer_range (default=0.02) and truncated between [-2, 2]. This roughly follows the GPT-2 paper's scheme (but with truncation, and not halving the std for W_pos).
+        LayerNorm weights are already initialized to 1.0, and all biases are initialized to 0.0 (including LayerNorm), so this just initializes weight matrices.
+
+        Weight matrices are set to empty by default (to save space + compute, since they're the bulk of the parameters), so it is important to call this if you are not loading in pretrained weights! Note that this function assumes that weight names being with W_
+        Set seed here to ensure determinism.
+        This does NOT follow the PyTorch scheme, which as far as I can tell is super out of date but no one has gotten round to updating it?
+        https://github.com/pytorch/pytorch/issues/18182
+
+        PyTorch Transformers are especially bad - TransformerEncoder initializes all layers to the same values?! https://github.com/pytorch/pytorch/issues/72253
+
+        """
+
+        if self.cfg.seed is not None:
+            torch.manual_seed(self.cfg.seed)
+
+        for name, param in self.named_parameters():
+            if "W_" in name:
+                nn.init.trunc_normal_(param, std=self.cfg.initializer_range)
